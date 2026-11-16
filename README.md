@@ -51,7 +51,8 @@ $ go install github.com/nfltr/send/cmd/nfltr-send@latest
 
 Or a release binary (linux, darwin, windows; amd64, arm64) from
 [Releases](https://github.com/nfltr/send/releases), checked against its
-signed `SHA256SUMS` (`ssh-keygen` from OpenSSH 8.1 or later):
+signed `SHA256SUMS` (`ssh-keygen` from OpenSSH 8.1 or later) and nfltr-send's own release key, Ed25519
+`SHA256:TqSS4Ad7mrwaNN6vZmr2liyFAK8Gk5AGDg0KH0evc9I`:
 
 ```console
 $ v=<version>; f=nfltr-send_linux_amd64
