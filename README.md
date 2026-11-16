@@ -43,12 +43,36 @@ to `machine.json`. A machine without one is told to run
 `nfltr config login`; a certificate the relay refused (revoked, expired)
 ends the sender with the same advice.
 
+## Install
+
+```console
+$ go install github.com/nfltr/send/cmd/nfltr-send@latest
+```
+
+Or a release binary (linux, darwin, windows; amd64, arm64) from
+[Releases](https://github.com/nfltr/send/releases), checked against its
+signed `SHA256SUMS` (`ssh-keygen` from OpenSSH 8.1 or later):
+
+```console
+$ v=<version>; f=nfltr-send_linux_amd64
+$ for x in $f SHA256SUMS SHA256SUMS.sshsig; do curl -fsSLO https://github.com/nfltr/send/releases/download/$v/$x; done
+$ curl -fsSLO https://raw.githubusercontent.com/nfltr/send/main/release/allowed_signers
+$ ssh-keygen -Y verify -f allowed_signers -I nfltr-release -n nfltr-release -s SHA256SUMS.sshsig < SHA256SUMS
+$ grep " $f\$" SHA256SUMS | sha256sum -c && chmod +x $f && mv $f ~/bin/nfltr-send
+```
+
 ## Build
 
 ```console
 $ go build ./cmd/nfltr-send
 $ make check   # gofmt, vet, -race tests
 $ make spec    # the TLA+ model
+$ make release-dryrun   # the release files in dist/, built twice and compared, signed with a throwaway key
 ```
+
+A release is `make release`, `make release-sign SIGNING_KEY=<key>`,
+`make release-verify` (against `release/allowed_signers`) on a clean
+checkout of its tag, then the files in `dist/` attached to the tag's
+GitHub release.
 
 License: Apache-2.0.

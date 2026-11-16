@@ -1,9 +1,9 @@
 # Copyright 2026 nfltr
 # SPDX-License-Identifier: Apache-2.0
 
-# make check and make spec on every push and pull request, and the tests
-# on Windows. Go is the toolchain go.mod names. Actions are pinned by
-# commit.
+# make check, make spec and make release-dryrun on every push and pull
+# request, and the tests on Windows. Go is the toolchain go.mod names.
+# Actions are pinned by commit.
 name: check
 on:
   push:
@@ -50,3 +50,14 @@ jobs:
           path: ~/.cache/link-tla
           key: link-tla-${{ hashFiles('scripts/fetch-tla.sh') }}
       - run: make spec
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make release-dryrun
