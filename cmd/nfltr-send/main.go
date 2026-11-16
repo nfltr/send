@@ -85,7 +85,7 @@ type common struct {
 func addCommon(fs *flag.FlagSet) common {
 	return common{
 		relay:     fs.String("relay", env("NFLTR_SEND_RELAY", "grpc.nfltr.xyz:443"), "relay agent-link `address` (send); $NFLTR_SEND_RELAY"),
-		relayHTTP: fs.String("relay-http", "", "relay HTTP `address` the address names; default: --relay without its grpc. prefix"),
+		relayHTTP: fs.String("relay-http", "", "relay HTTP `address` the address names; default: --relay without its grpc. prefix and port 443"),
 		pin:       fs.String("relay-pin", os.Getenv(relaytrust.PinEnv), "accept the relay certificate with this SHA-256 `fingerprint` (a private relay's); $"+relaytrust.PinEnv),
 		direct:    fs.String("direct", "on", "direct paths: `mode` on, public (no LAN addresses) or off (relayed only)"),
 	}
@@ -105,6 +105,8 @@ func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
 	if http == "" {
 		http = strings.TrimPrefix(*c.relay, "grpc.")
 	}
+	// The address names the relay as its nf1.hosts do: no port 443.
+	http = strings.TrimSuffix(http, ":443")
 	return nfnet.Config{Relay: http, AgentRelay: *c.relay, RelayTLS: relaytrust.WithPin(nil, *c.pin)}, mode, nil
 }
 

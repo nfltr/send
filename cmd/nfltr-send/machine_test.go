@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"flag"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -159,5 +160,22 @@ func TestMachineCredentialIsForItsRelay(t *testing.T) {
 	}
 	if err := m.forRelay("grpc.other.example:443"); err == nil || !strings.Contains(err.Error(), "relay.example") {
 		t.Errorf("another relay: %v, want refused naming the certificate's relay", err)
+	}
+}
+
+// The address names its relay as relays' nf1.hosts and nfltr up do: the
+// HTTPS port 443 left out (the relay checks the registration proof against
+// that name, and refused "nfltr.xyz:443").
+func TestAddressNamesTheRelayWithoutPort443(t *testing.T) {
+	for relay, want := range map[string]string{"grpc.relay.example:443": "relay.example", "relay.example:8443": "relay.example:8443"} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		c := addCommon(fs)
+		if err := fs.Parse([]string{"--relay", relay}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _, err := c.config()
+		if err != nil || cfg.Relay != want {
+			t.Errorf("--relay %s: address relay %q (%v), want %q", relay, cfg.Relay, err, want)
+		}
 	}
 }
