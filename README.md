@@ -35,7 +35,8 @@ The resume rules are a checked TLA+ model: [`spec/`](spec/README.md).
 
 ```console
 $ go build ./cmd/nfltr-send
-$ go test ./...
+$ make check   # gofmt, vet, -race tests
+$ make spec    # the TLA+ model
 ```
 
 License: Apache-2.0.

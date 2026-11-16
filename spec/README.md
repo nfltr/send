@@ -3,7 +3,7 @@
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
 of what it wrote, writes that land wrong, and a sender restarted with
-another file. `./check.sh` (TLC 1.8.0; `TLA_JAVA`, `TLA_JAR`) runs the model
+another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
 with `-coverage 1`, each witness (must be violated) and each mutant (must
 be caught). N = 3 chunks, two chunk values, two faults: 608 states.
 
