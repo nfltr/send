@@ -296,3 +296,28 @@ func TestNewSourceRefusesLinksAndDuplicates(t *testing.T) {
 		t.Fatal("two sources named f were taken")
 	}
 }
+
+// BenchmarkTransfer is one 64 MiB file over a pipe: the protocol's own cost
+// (framing, SHA-256 on both sides, the receiver's verify read), no network.
+func BenchmarkTransfer(b *testing.B) {
+	d := filepath.Join(b.TempDir(), "f")
+	buf := make([]byte, 64<<20)
+	_, _ = rand.Read(buf)
+	if err := os.WriteFile(d, buf, 0o600); err != nil {
+		b.Fatal(err)
+	}
+	s, err := NewSource([]string{d})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(64 << 20)
+	for b.Loop() {
+		dst := b.TempDir()
+		x, y := net.Pipe()
+		go func() { _, _, _ = s.Serve(x); _ = x.Close() }()
+		if a, err := Receive(y, dst, nil); err != nil || !a.OK {
+			b.Fatal(a, err)
+		}
+		_ = y.Close()
+	}
+}
