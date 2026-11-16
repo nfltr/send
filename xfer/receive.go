@@ -24,6 +24,11 @@ import (
 // there and the next receive of the same offer resumes from it.
 const StagePrefix = ".nfltr-send-"
 
+// StageLife is an offer's life on the receiving side: a stage nobody wrote
+// to for this long is abandoned, and the next receive into its directory
+// removes it.
+const StageLife = 7 * 24 * time.Hour
+
 // ErrRefused is a transfer the receiver will not take; nothing changed.
 var ErrRefused = errors.New("refused")
 
@@ -67,6 +72,10 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	a, err := r.run(c, progress)
 	if err != nil {
 		return a, err
+	}
+	if !a.OK { // refused: not resumed, so nothing of it stays
+		_ = r.sr.Close()
+		_ = r.root.RemoveAll(r.stage)
 	}
 	if err := c.writeJSON(frameAnswer, a); err != nil {
 		return a, err
@@ -118,6 +127,7 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 	}
 	sum := sha256.Sum256(raw)
 	r.stage = StagePrefix + hex.EncodeToString(sum[:8])
+	r.sweep()
 	if err := root.Mkdir(r.stage, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		_ = root.Close()
 		return nil, err
@@ -127,6 +137,32 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// sweep removes the stages, other than this offer's, that nobody wrote to
+// for StageLife (abandoned offers'); best effort.
+func (r *receiver) sweep() {
+	es, _ := fs.ReadDir(r.root.FS(), ".")
+	for _, e := range es {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), StagePrefix) || e.Name() == r.stage {
+			continue
+		}
+		stale := true
+		_ = fs.WalkDir(r.root.FS(), e.Name(), func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				stale = false
+				return fs.SkipAll
+			}
+			if fi, err := d.Info(); err != nil || time.Since(fi.ModTime()) < StageLife {
+				stale = false
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if stale {
+			_ = r.root.RemoveAll(e.Name())
+		}
+	}
 }
 
 func (r *receiver) close() {

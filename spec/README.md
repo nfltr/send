@@ -42,5 +42,5 @@ be caught). N = 3 chunks, two chunk values, two faults: 608 states.
 | `Open` (the receiver's claim, the prefix check, the offset) | `xfer/receive.go` `parts`, `open`; `xfer/send.go` `sendFile` |
 | `Send` | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameData) |
 | `Finish` (the digest over what is on disk, discard on mismatch) | `xfer/receive.go` `verify`, `commit` |
-| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session) |
+| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`) and an abandoned one's (`sweep`, `StageLife`) |
 | `Change` | `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |

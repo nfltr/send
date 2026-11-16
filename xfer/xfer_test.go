@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // tree makes src/data (a directory: a file of n random bytes, a small
@@ -201,8 +202,9 @@ func TestResumeOfAForeignPartStartsOver(t *testing.T) {
 }
 
 // The receiver's digest over what is on its disk must equal the sender's:
-// a file whose bytes differ is removed and nothing is committed (spec
-// Finish, mutant no-final-check).
+// a file whose bytes differ refuses the transfer and nothing is committed
+// (spec Finish, mutant no-final-check); a refused transfer is not resumed,
+// so its stage is removed (spec Crash to an empty part).
 func TestDigestMismatchCommitsNothing(t *testing.T) {
 	dst := t.TempDir()
 	a, b := net.Pipe()
@@ -224,12 +226,35 @@ func TestDigestMismatchCommitsNothing(t *testing.T) {
 	if err != nil || ans.OK || !strings.Contains(ans.Message, "SHA-256") {
 		t.Fatalf("answer %+v, %v: want a refused digest", ans, err)
 	}
-	stage := filepath.Join(dst, names(t, dst)[0])
-	if got := names(t, dst); len(got) != 1 || !strings.HasPrefix(got[0], StagePrefix) {
-		t.Fatalf("dst holds %q, want only the stage", got)
+	if got := names(t, dst); len(got) != 0 {
+		t.Fatalf("dst holds %q, want nothing (the refused transfer's stage removed)", got)
 	}
-	if _, err := os.Stat(filepath.Join(stage, "f")); !os.IsNotExist(err) {
-		t.Fatal("the mismatched file was kept")
+}
+
+// A stage nobody wrote to for StageLife is an abandoned offer's: the next
+// receive into that directory removes it, and keeps fresh stages (another
+// offer's, resumable) and names that are not stages.
+func TestStaleStagesAreRemoved(t *testing.T) {
+	dst := t.TempDir()
+	old := time.Now().Add(-StageLife - time.Hour)
+	for _, name := range []string{StagePrefix + "old", StagePrefix + "fresh", ".other"} {
+		f := filepath.Join(dst, name, "sub", "part")
+		must(t, os.MkdirAll(filepath.Dir(f), 0o700))
+		must(t, os.WriteFile(f, []byte("x"), 0o600))
+		if name == StagePrefix+"fresh" {
+			continue
+		}
+		for _, p := range []string{f, filepath.Dir(f), filepath.Join(dst, name)} {
+			must(t, os.Chtimes(p, old, old))
+		}
+	}
+	s, err := NewSource([]string{tree(t, 1<<10)})
+	must(t, err)
+	if _, rr := session(t, s, dst, 0); rr.err != nil || !rr.a.OK {
+		t.Fatalf("receiver %+v", rr)
+	}
+	if got := names(t, dst); !slices.Equal(got, []string{StagePrefix + "fresh", ".other", "data"}) {
+		t.Fatalf("dst holds %q, want the fresh stage, .other and data", got)
 	}
 }
 

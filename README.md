@@ -24,7 +24,9 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory beside it); the receiver resumes by itself, and
   the next `receive` of the same offer resumes from there. Only what is
-  missing is sent again.
+  missing is sent again. A refused transfer keeps nothing; a stage
+  nobody wrote to for 7 days is an abandoned offer's, and the next
+  `receive` into that directory removes it.
 
 The resume rules are a checked TLA+ model: [`spec/`](spec/README.md).
 
