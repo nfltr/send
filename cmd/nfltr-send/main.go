@@ -39,8 +39,9 @@ Usage:
 
 send prints an address (nf1...) and serves the files under it until it is
 stopped (--once: until the first complete transfer). The address is a
-secret: whoever holds it can receive. Serving needs an nfltr account's API
-key (--api-key-file, or $NFLTR_API_KEY).
+secret: whoever holds it can receive. Serving needs this machine's nfltr
+machine certificate: the one ` + "`nfltr config login`" + ` left beside the nfltr
+config file (renewed while serving), or --machine-credential.
 
 receive reads the address from --address-file (default -, stdin; never
 from the command line, where every user of the machine sees it) and writes
@@ -110,7 +111,7 @@ func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
 func sendCmd(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("nfltr-send send", flag.ContinueOnError)
 	cf := addCommon(fs)
-	keyFile := fs.String("api-key-file", "", "read the nfltr API key from this `file` (default $NFLTR_API_KEY)")
+	machineFile := fs.String("machine-credential", "", "this machine's certificate `file` (machine.json, machine.key beside it); default: the one nfltr config login saved")
 	once := fs.Bool("once", false, "exit after the first complete transfer")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	if err := fs.Parse(args); err != nil {
@@ -127,13 +128,19 @@ func sendCmd(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail(1, err)
 	}
-	if cfg.APIKey, err = apiKey(*keyFile); err != nil {
+	m, err := loadMachine(machinePath(*machineFile))
+	if err == nil {
+		err = m.forRelay(cfg.AgentRelay)
+	}
+	if err != nil {
 		return fail(1, err)
 	}
+	cfg.ClientCert = m.cert
 	var id [4]byte
 	_, _ = rand.Read(id[:])
 	cfg.Agent = "send-" + hex.EncodeToString(id[:])
 	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	go m.run(ctx, cfg.Logger)
 	l, _, err := nf1.Mint(cfg.Relay)
 	if err == nil && mode != nfnet.DirectOff {
 		l, err = l.WithDirect()
@@ -143,7 +150,7 @@ func sendCmd(ctx context.Context, args []string) int {
 	}
 	ln, err := nfnet.Listen(ctx, cfg, "send", nfnet.ListenOptions{Address: l, Direct: mode})
 	if err != nil {
-		return fail(3, err)
+		return fail(3, enrolHint(err))
 	}
 	defer ln.Close() //nolint:errcheck
 	files, bytes := src.Files()
@@ -165,7 +172,7 @@ func sendCmd(ctx context.Context, args []string) int {
 				return 0
 			default:
 			}
-			return fail(3, err)
+			return fail(3, enrolHint(err))
 		}
 		go func() {
 			defer c.Close() //nolint:errcheck
@@ -296,15 +303,12 @@ func readAddress(name string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-func apiKey(file string) (string, error) {
-	if file == "" {
-		if k := os.Getenv("NFLTR_API_KEY"); k != "" {
-			return k, nil
-		}
-		return "", errors.New("send: serving an address needs an nfltr account's API key: --api-key-file <file> or $NFLTR_API_KEY")
+// enrolHint says what to do when the relay refused the certificate.
+func enrolHint(err error) error {
+	if nfnet.CodeOf(err) == nfnet.CodeAuth {
+		return fmt.Errorf("%w; run `nfltr config login` to enrol this machine again", err)
 	}
-	b, err := os.ReadFile(file) // #nosec G304 -- the file the user named
-	return strings.TrimSpace(string(b)), err
+	return err
 }
 
 func env(k, def string) string {

@@ -1,0 +1,149 @@
+// Copyright 2026 nfltr
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/nfltr/relay/client/machinecert"
+)
+
+// machine is this machine's account machine certificate as `nfltr config
+// login` saves it: machine.json (the relay's answer, the relay's host and
+// its HTTP base for renewals) and machine.key beside it (owner only). The
+// sender presents it to the relay as its TLS client certificate and renews
+// it while it serves (relay client machinecert.Loop).
+type machine struct {
+	path  string
+	key   *ecdsa.PrivateKey
+	saved savedCert // run's goroutine only, after loadMachine
+	cur   atomic.Pointer[tls.Certificate]
+}
+
+// savedCert is machine.json, written back whole on each renewal.
+type savedCert struct {
+	machinecert.Cert
+	RelayHost string `json:"relay_host"`
+	BaseURL   string `json:"base_url"`
+}
+
+var errNoMachine = errors.New("this machine holds no machine certificate: run `nfltr config login` (or name one with --machine-credential)")
+
+// machinePath is name, else machine.json beside the nfltr config file
+// ($NFLTR_CONFIG, else ~/.config/nfltr/nfltr.json), where `nfltr config
+// login` keeps it.
+func machinePath(name string) string {
+	if name != "" {
+		return name
+	}
+	cfg := os.Getenv("NFLTR_CONFIG")
+	if cfg == "" {
+		cfg = "nfltr.json"
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg = filepath.Join(home, ".config", "nfltr", "nfltr.json")
+		}
+	}
+	return filepath.Join(filepath.Dir(cfg), "machine.json")
+}
+
+// loadMachine reads path and machine.key beside it.
+func loadMachine(path string) (*machine, error) {
+	b, err := os.ReadFile(path) // #nosec G304 -- this machine's certificate file
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%s: %w", path, errNoMachine)
+	}
+	if err != nil {
+		return nil, err
+	}
+	m := &machine{path: path}
+	if err := json.Unmarshal(b, &m.saved); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	c, err := machinecert.ParseCert([]byte(m.saved.Chain))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	m.saved.Leaf, m.saved.NotAfter = c.Leaf, c.NotAfter
+	if m.key, err = machinecert.LoadKey(filepath.Join(filepath.Dir(path), "machine.key")); err != nil {
+		return nil, err
+	}
+	t := m.saved.TLS(m.key)
+	m.cur.Store(&t)
+	return m, nil
+}
+
+// cert is the newest certificate (nfnet.Config.ClientCert).
+func (m *machine) cert() (*tls.Certificate, error) { return m.cur.Load(), nil }
+
+// forRelay refuses a relay other than the certificate's (a hosted relay's
+// gRPC host is its HTTP host with "grpc." in front).
+func (m *machine) forRelay(addr string) error {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if strings.TrimPrefix(host, "grpc.") != strings.TrimPrefix(m.saved.RelayHost, "grpc.") {
+		return fmt.Errorf("%s: the machine certificate is for relay %s, not %s", m.path, m.saved.RelayHost, addr)
+	}
+	return nil
+}
+
+// run renews the certificate until ctx ends; a final refusal or an expiry
+// is logged and the relay then refuses the certificate (enrol again).
+func (m *machine) run(ctx context.Context, log *slog.Logger) {
+	c := &machinecert.Client{BaseURL: m.saved.BaseURL, HTTP: &http.Client{Timeout: time.Minute}}
+	cur := m.saved.Cert
+	err := machinecert.Loop{
+		Renew: func(ctx context.Context, cur *machinecert.Cert) (*machinecert.Cert, error) {
+			return c.Renew(ctx, cur, m.key)
+		},
+		Save: m.save,
+	}.Run(ctx, &cur)
+	if err != nil {
+		log.Error("machine certificate not renewed: run `nfltr config login` to enrol this machine again", "error", err)
+	}
+}
+
+// save keeps a renewed certificate in machine.json (replaced whole, 0600)
+// and presents it from the next handshake on.
+func (m *machine) save(c *machinecert.Cert) error {
+	s := m.saved
+	s.Cert = *c
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(m.path), ".machine-*.json")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	_, err = tmp.Write(append(b, '\n'))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), m.path); err != nil {
+		return err
+	}
+	m.saved = s
+	t := c.TLS(m.key)
+	m.cur.Store(&t)
+	return nil
+}

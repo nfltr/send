@@ -26,10 +26,20 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   the next `receive` of the same offer resumes from there. Only what is
   missing is sent again.
 
-Serving an address needs an nfltr account's API key (`--api-key-file` or
-`$NFLTR_API_KEY`); receiving needs none.
-
 The resume rules are a checked TLA+ model: [`spec/`](spec/README.md).
+
+## Credentials
+
+Receiving needs none. Serving an address registers it with the relay, so
+the sending machine presents its nfltr machine certificate: by default the
+one `nfltr config login` saved beside the nfltr config file
+(`machine.json` and `machine.key` next to `$NFLTR_CONFIG`, else
+`~/.config/nfltr/`), or the `machine.json` that `--machine-credential`
+names (its `machine.key` beside it, readable by its owner only). The
+sender renews the certificate while it serves and writes each renewal back
+to `machine.json`. A machine without one is told to run
+`nfltr config login`; a certificate the relay refused (revoked, expired)
+ends the sender with the same advice.
 
 ## Build
 
