@@ -1,1 +1,3 @@
 /nfltr-send
+spec/*_TTrace_*
+spec/states/

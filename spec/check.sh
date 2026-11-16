@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 java=${TLA_JAVA:-java} jar=${TLA_JAR:?set TLA_JAR to tla2tools.jar (1.8.0)}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-tlc() { c=$1; shift; "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers 2 -cleanup -metadir "$tmp/$c" "$@" -config "$c.cfg" Resume.tla 2>&1 | sed 's/^/  /' >"$tmp/$c.out" || true; }
+tlc() { c=$1; shift; "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers 2 -cleanup -noGenerateSpecTE -metadir "$tmp/$c" "$@" -config "$c.cfg" Resume.tla 2>&1 | sed 's/^/  /' >"$tmp/$c.out" || true; }
 fail=0
 tlc Resume -coverage 1
 # zero coverage outside CleanEnd (enabled only under mutant commit-cut)
