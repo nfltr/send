@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -361,11 +362,15 @@ func (r *receiver) commit() error {
 	}
 	// ponytail: the receiving directory is synced, not the stage's nested
 	// directories; a power loss can still lose a nested entry's name.
-	if d, err := r.root.Open("."); err == nil { // the renames on stable storage
-		err = d.Sync()
-		_ = d.Close()
-		if err != nil {
-			return err
+	// Windows has no directory sync (FlushFileBuffers on a directory is
+	// refused); NTFS journals the renames.
+	if runtime.GOOS != "windows" {
+		if d, err := r.root.Open("."); err == nil { // the renames on stable storage
+			err = d.Sync()
+			_ = d.Close()
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return r.root.RemoveAll(r.stage)
