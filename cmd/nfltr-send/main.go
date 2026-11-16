@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -213,6 +214,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail(1, err)
 	}
+	cfg.Relay = t.Address.Relay // --relay-pin verifies the address's relay
 	var mu sync.Mutex
 	path, paths := "relayed", []string{}
 	cfg.Events = func(e nfnet.Event) {
@@ -256,7 +258,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 			return fail(2, fmt.Errorf("refused: %s", firstOf(a.Message, fmt.Sprint(err))))
 		case ctx.Err() != nil:
 			return fail(3, fmt.Errorf("stopped; receive the same address again to resume (%w)", err))
-		case try >= *tries || errors.Is(err, xfer.ErrProtocol):
+		case try >= *tries || errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError)):
 			return fail(3, fmt.Errorf("%w; receive the same address again to resume", err))
 		}
 		fmt.Fprintf(os.Stderr, "session %d ended (%v); resuming\n", try, err)
