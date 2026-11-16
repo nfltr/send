@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // StagePrefix starts the name of the directory a transfer is staged in,
@@ -229,10 +230,14 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 {
 				return fail("end of entry %d", cur)
 			}
-			if err := f.Close(); err != nil {
-				return Answer{}, err
+			err := f.Sync() // on stable storage before it can be committed
+			if cerr := f.Close(); err == nil {
+				err = cerr
 			}
 			f = nil
+			if err != nil {
+				return Answer{}, err
+			}
 			if err := r.verify(r.m.Entries[cur], e.SHA256); err != nil {
 				return Answer{Message: err.Error()}, nil
 			}
@@ -294,14 +299,20 @@ func (r *receiver) verify(e Entry, want string) error {
 	return fmt.Errorf("%q: SHA-256 of what landed is not the sender's; removed, the next receive sends it again", e.Path)
 }
 
-// commit makes the directories and moves every top-level name into place,
-// each only while dir still does not hold it; then removes the stage.
+// commit makes the directories, gives files their mtimes, and moves every
+// top-level name into place, each only while dir still does not hold it;
+// then syncs dir and removes the stage.
 func (r *receiver) commit() error {
 	for _, e := range r.m.Entries {
+		var err error
 		if e.Dir {
-			if err := r.sr.MkdirAll(e.Path, 0o755); err != nil {
-				return err
-			}
+			err = r.sr.MkdirAll(e.Path, 0o755)
+		} else if e.MTime != 0 {
+			t := time.Unix(0, e.MTime)
+			err = r.sr.Chtimes(e.Path, t, t)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	if top := r.taken(); top != "" {
@@ -309,6 +320,15 @@ func (r *receiver) commit() error {
 	}
 	for _, top := range r.tops {
 		if err := r.root.Rename(path.Join(r.stage, top), top); err != nil {
+			return err
+		}
+	}
+	// ponytail: the receiving directory is synced, not the stage's nested
+	// directories; a power loss can still lose a nested entry's name.
+	if d, err := r.root.Open("."); err == nil { // the renames on stable storage
+		err = d.Sync()
+		_ = d.Close()
+		if err != nil {
 			return err
 		}
 	}

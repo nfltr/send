@@ -143,6 +143,10 @@ func TestTransferLandsWhole(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(dst, "data", "sub", "empty")); err != nil || !fi.IsDir() {
 		t.Fatal("the empty directory did not land")
 	}
+	want, _ := os.Stat(filepath.Join(src, "big.bin"))
+	if got, err := os.Stat(filepath.Join(dst, "data", "big.bin")); err != nil || !got.ModTime().Equal(want.ModTime()) {
+		t.Fatal("a file did not keep its mtime")
+	}
 }
 
 // A cut session commits nothing; the next resumes from the stage's part
