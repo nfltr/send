@@ -7,19 +7,24 @@ another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spe
 with `-coverage 1`, each witness (must be violated) and each mutant (must
 be caught). N = 3 chunks, two chunk values, two faults: 608 states.
 
-`Commit.tla` models the step after it: an offer's top-level entries
-arrive verified in the stage; the commit writes an intent record (the
-offer's whole manifest digest) into the stage, synced, then renames the
-entries one by one into the receiving directory. A rename can fail and
-the receiver can crash at any point; either leaves things as they are,
-and the next receive of the same offer finds the intent and rolls forward
-(renames what the stage still holds; a name the stage no longer holds was
-moved). Another's name in the directory refuses the offer, also one that
-appears during the renames: a rename never replaces. A stale stage (nobody
-wrote to it for StageLife) is removed by another receive's sweep only when
-it holds no intent record of its own; one with its intent is finished
-by that sweep. `spec/check.sh` checks it the same way. N = 2 entries, two
-faults.
+`Commit.tla` models the step after it, with two receivers of the same
+offer into the same directory: each opens the offer's stage by taking its
+exclusive lock (held until that receive ends; a receiver that finds it
+held refuses, busy), writes and verifies the files, then the commit writes
+an intent record (the offer's whole manifest digest) into the stage,
+synced, and renames the entries one by one into the receiving directory.
+A rename can fail and the receiver can crash at any point; either leaves
+things as they are, and the next receive of the same offer finds the
+intent and rolls forward: it renames what the stage still holds, and takes
+a name the stage no longer holds as moved only when what the directory
+holds there has the manifest's content (someone may have deleted it and
+made another between the crash and the recovery). Another's name in the
+directory refuses the offer, also one that appears during the renames: a
+rename never replaces. A stale stage (nobody wrote to it for StageLife)
+is removed by another receive's sweep only when its lock is free and it
+holds no intent record of its own; one with its intent is finished by
+that sweep. `spec/check.sh` checks it the same way. N = 2 entries, P = 2
+receivers, two faults: 1250 states.
 
 | invariant / property | meaning |
 |---|---|
@@ -43,8 +48,9 @@ faults.
 
 | invariant / property | meaning |
 |---|---|
-| `Kept` | verified data is never deleted: every entry that arrived is in the stage or in place |
-| `Committed` | a done commit holds every entry in place and no stage; no other's name is taken for the offer's |
+| `Kept` | verified data is never deleted by a receiver: every entry that arrived is in the stage, in place, or deleted there by someone else |
+| `Intact` | what a commit puts in place is verified (no other receiver rewrote it in the stage) |
+| `Committed` | a done commit holds every entry in place with the manifest's content and no stage; no other's name is taken for the offer's |
 | `AllOrNone` | with no intent pending, the directory holds none of the offer's entries |
 | `NoReplace` | another's name in the directory is never replaced (an action property) |
 | `Done` | with finitely many faults, the offer is committed, or another's name refuses it (the stage kept) |
@@ -53,8 +59,11 @@ faults.
 |---|---|
 | `WitnessPartWay` | a commit with some entries in place and some still staged |
 | `WitnessRecoveredAfterCrash` | a commit finished by a later receive after one stopped part way |
+| `WitnessOtherFinished` | a commit finished by another receiver than the one that stopped |
+| `WitnessBusy` | one receiver holds the stage while another waits idle (refused busy) |
 | `WitnessForeignRefused` | an intent pending while another's name holds an entry's name |
 | `WitnessRefusedMidCommit` | a name that appeared during the renames stops the commit, some entries in place |
+| `WitnessReplacedRefused` | an entry in place deleted and made again by someone else while the intent is pending |
 | `WitnessExpired` | an abandoned stage removed by the sweep |
 
 | mutant | the failure it plants | caught by |
@@ -64,6 +73,8 @@ faults.
 | `trust-foreign` | an intent record that is not this offer's (torn, or another offer's) trusted | `Committed` |
 | `replace` | a rename that replaces a name that appeared after the check | `NoReplace` |
 | `sweep-deletes-intent` | the stale sweep removes a stage holding its intent (review 2026-11-17) | `Kept` |
+| `no-lock` | receivers open the stage without its lock: one rewrites what another verified and commits (review 2026-11-17 #2, finding A) | `Kept` (and `Intact`) |
+| `trust-moved` | recovery takes any name the stage no longer holds as moved, without comparing it with the manifest (review 2026-11-17 #2, finding B) | `Committed` |
 
 ## Environment assumptions
 
@@ -75,7 +86,8 @@ faults.
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
 | SHA-256 is collision resistant (the model compares the bytes themselves) | FIPS 180-4 |
 | a rename is atomic across a crash; a synced file and its directory entry survive one | rename(2), fsync(2) |
-| a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+; where a file system refuses the flag, link(2) for a file, which fails on an existing name, then unlink), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows); elsewhere link then unlink for a file, a check then rename for a directory (not atomic) | rename(2) of Linux and macOS, MoveFileExW; `xfer/rename_*.go` |
+| an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `xfer/lock_*.go` |
+| a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `xfer/rename_*.go` |
 
 ## Code map
 
@@ -86,7 +98,7 @@ faults.
 | `Finish` (the digest over what is on disk, discard on mismatch) | `xfer/receive.go` `verify`, `commit` |
 | `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`) and an abandoned one's (`sweep`, `StageLife`) |
 | `Change` | `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
+| `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `xfer/lock_*.go` |
 | `Commit.tla` `Begin` (the taken check, the intent) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
-| `Commit.tla` `Recover` | `xfer/receive.go` `newReceiver`, `readIntent`, `Receive` |
-| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (the renames, the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive` and `Answer.keep` (the stage kept) |
-| `Commit.tla` `Expire` (and `Recover` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` |
+| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (the renames, the moved entries compared with the manifest: `placed`, the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive` and `Answer.keep` (the stage kept) |
+| `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` |
