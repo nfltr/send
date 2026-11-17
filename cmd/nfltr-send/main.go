@@ -55,7 +55,7 @@ others may read is refused, except on Windows, where the file is as
 private as its directory's ACL) and writes
 the files into --to (default .). A name that already exists there refuses
 the transfer. Nothing lands until every file's SHA-256 over what is on
-disk equals the sender's; a cut transfer is resumed, by itself and by the
+disk equals the one the sender offered; a cut transfer is resumed, by itself and by the
 next receive of the same address, from what already arrived.
 
 Exit status: 0 done, 1 usage, 2 refused by the other side, 3 failed,

@@ -5,14 +5,17 @@
 // encrypted session (any io.ReadWriter: the session's TLS orders and
 // authenticates every byte). The receiver pulls; the sender answers:
 //
-//  1. sender: manifest (the entries: paths, sizes, modes, mtimes);
+//  1. sender: manifest (the entries: paths, sizes, modes, mtimes, and each
+//     file's SHA-256, taken when it was offered);
 //  2. receiver: want (per file it holds a part of: the part's length and
 //     SHA-256);
 //  3. sender, per file in manifest order: start (the offset it sends
 //     from: the part's length when that part is a prefix of its file,
-//     else 0), data, end (the SHA-256 of its whole file); then done;
+//     else 0), data, end; it ends the session (ErrChanged) instead of
+//     sending end when the bytes it sent are not the manifest's SHA-256;
+//     then done;
 //  4. receiver: answer. It commits (renames into place) only after every
-//     file's SHA-256 over what is on its disk equals the sender's, so a cut
+//     file's SHA-256 over what is on its disk equals the manifest's, so a cut
 //     session leaves nothing in place, only the parts it resumes from.
 //
 // The resume rules are spec/Resume.tla's (Open, Send, Finish); the
@@ -31,7 +34,7 @@ import (
 )
 
 // Version is the protocol's, in the manifest.
-const Version = 1
+const Version = 2
 
 // Frame types.
 const (
@@ -53,11 +56,12 @@ const (
 // Entry is one manifest entry: a directory or a regular file, path
 // slash-separated and relative.
 type Entry struct {
-	Path  string `json:"path"`
-	Dir   bool   `json:"dir,omitempty"`
-	Size  int64  `json:"size,omitempty"`
-	Mode  uint32 `json:"mode"`
-	MTime int64  `json:"mtime,omitempty"` // Unix nanoseconds
+	Path   string `json:"path"`
+	Dir    bool   `json:"dir,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+	Mode   uint32 `json:"mode"`
+	MTime  int64  `json:"mtime,omitempty"`  // Unix nanoseconds
+	SHA256 string `json:"sha256,omitempty"` // a file's, when it was offered
 }
 
 // Manifest is what a sender offers.
@@ -83,8 +87,7 @@ type start struct {
 }
 
 type end struct {
-	Index  int    `json:"i"`
-	SHA256 string `json:"sha256"`
+	Index int `json:"i"`
 }
 
 // Answer is the receiver's last word.

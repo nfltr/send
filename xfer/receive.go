@@ -141,6 +141,9 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 		if e.Size < 0 || (e.Dir && e.Size != 0) {
 			return nil, fmt.Errorf("%q: bad size", e.Path)
 		}
+		if d, err := hex.DecodeString(e.SHA256); !e.Dir && (err != nil || len(d) != sha256.Size) {
+			return nil, fmt.Errorf("%q: bad SHA-256", e.Path)
+		}
 		if top, _, _ := strings.Cut(name, "/"); !slices.Contains(r.tops, top) {
 			r.tops = append(r.tops, top)
 		}
@@ -309,7 +312,7 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if err != nil {
 				return Answer{}, err
 			}
-			if err := r.verify(r.m.Entries[cur], e.SHA256); err != nil {
+			if err := r.verify(r.m.Entries[cur]); err != nil {
 				return Answer{Message: err.Error()}, nil
 			}
 			a.Files++
@@ -351,23 +354,23 @@ func (r *receiver) open(e Entry, off int64) (*os.File, error) {
 	return f, nil
 }
 
-// verify compares the SHA-256 of what is on disk with the sender's; an
+// verify compares the SHA-256 of what is on disk with the manifest's; an
 // unequal part is removed, so the next attempt sends it whole.
-func (r *receiver) verify(e Entry, want string) error {
+func (r *receiver) verify(e Entry) error {
 	f, err := r.sr.Open(e.Path)
 	if err != nil {
 		return err
 	}
 	got, err := prefixSum(f, e.Size)
 	_ = f.Close()
-	if err == nil && got == want {
+	if err == nil && got == e.SHA256 {
 		return nil
 	}
 	_ = r.sr.Remove(e.Path)
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("%q: SHA-256 of what landed is not the sender's; removed, the next receive sends it again", e.Path)
+	return fmt.Errorf("%q: SHA-256 of what landed is not the offered one; removed, the next receive sends it again", e.Path)
 }
 
 // commit makes the directories, gives files their mtimes, syncs them,

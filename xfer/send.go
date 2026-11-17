@@ -56,6 +56,9 @@ func NewSource(paths []string) (*Source, error) {
 			e := Entry{Path: filepath.ToSlash(rel), Dir: d.IsDir(), Mode: uint32(fi.Mode().Perm())}
 			if !e.Dir {
 				e.Size, e.MTime = fi.Size(), fi.ModTime().UnixNano()
+				if e.SHA256, err = fileSum(q, e); err != nil {
+					return err
+				}
 				s.files[len(s.Manifest.Entries)] = q
 			}
 			s.Manifest.Entries = append(s.Manifest.Entries, e)
@@ -66,6 +69,21 @@ func NewSource(paths []string) (*Source, error) {
 		}
 	}
 	return s, nil
+}
+
+// fileSum is the SHA-256 of the file at q, refused when it is not e's size
+// and mtime after the read.
+func fileSum(q string, e Entry) (string, error) {
+	f, err := os.Open(q) // #nosec G304 -- a file the user offered
+	if err != nil {
+		return "", err
+	}
+	defer f.Close() //nolint:errcheck
+	sum, err := prefixSum(f, e.Size)
+	if err == nil {
+		err = unchanged(f, e)
+	}
+	return sum, err
 }
 
 // Files and Bytes count the source's file entries and their bytes.
@@ -128,7 +146,8 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 }
 
 // sendFile sends entry i from the part's offset when the part is a prefix
-// of the file (spec Open), else from 0, then the whole file's SHA-256.
+// of the file (spec Open), else from 0, then its end, only when the bytes
+// it sent are the offered ones.
 func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, error) {
 	f, err := os.Open(s.files[i])
 	if err != nil {
@@ -141,7 +160,7 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	h := sha256.New()
 	var off int64
 	if p.Offset > 0 && p.Offset <= e.Size {
-		got, err := prefixSum(io.TeeReader(io.LimitReader(f, p.Offset), h), p.Offset)
+		got, err := prefixSum(io.TeeReader(io.LimitReader(readFile(f), p.Offset), h), p.Offset)
 		if err != nil {
 			return 0, err
 		}
@@ -159,7 +178,7 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	}
 	var n int64
 	for n < e.Size-off {
-		k, err := io.ReadFull(f, buf[:min(int64(len(buf)), e.Size-off-n)])
+		k, err := io.ReadFull(readFile(f), buf[:min(int64(len(buf)), e.Size-off-n)])
 		if err != nil {
 			return n, fmt.Errorf("%s: %w (changed while being sent?)", e.Path, err)
 		}
@@ -172,23 +191,20 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	if err := unchanged(f, e); err != nil {
 		return n, err
 	}
-	// Size and mtime miss a rewrite in place that restores them: the file
-	// read again must be the bytes sent, else they are a mix (review
-	// 2026-11-17, F2). ponytail: a second read of every file; a digest
-	// in the manifest, hashed before serving, if that read costs too much.
-	sum := hexSum(h)
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return n, err
+	// Size and mtime miss a rewrite in place that restores them: the bytes
+	// sent must be the offered ones (review 2026-11-17, F2).
+	if hexSum(h) != e.SHA256 {
+		return n, fmt.Errorf("%s: its bytes %w", e.Path, ErrChanged)
 	}
-	if again, err := prefixSum(f, e.Size); err != nil || again != sum {
-		return n, errors.Join(fmt.Errorf("%s: its bytes %w", e.Path, ErrChanged), err)
-	}
-	return n, c.writeJSON(frameEnd, end{Index: i, SHA256: sum})
+	return n, c.writeJSON(frameEnd, end{Index: i})
 }
 
 // ErrChanged is a source file that changed since it was offered, or
 // while it was sent.
 var ErrChanged = errors.New("changed since it was offered: send it again")
+
+// readFile reads a file being served (a test counts the bytes).
+var readFile = func(f *os.File) io.Reader { return f }
 
 // unchanged refuses a file whose size or mtime is no longer the manifest's.
 func unchanged(f *os.File, e Entry) error {

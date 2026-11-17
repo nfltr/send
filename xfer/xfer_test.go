@@ -160,7 +160,7 @@ func TestCutTransferResumes(t *testing.T) {
 	s, err := NewSource([]string{src})
 	must(t, err)
 	frame := func(v any) int64 { b, _ := json.Marshal(v); return 5 + int64(len(b)) }
-	afterBig := frame(s.Manifest) + frame(start{Index: 1}) + 16*(5+maxData) + frame(end{Index: 1, SHA256: strings.Repeat("0", 64)})
+	afterBig := frame(s.Manifest) + frame(start{Index: 1}) + 16*(5+maxData) + frame(end{Index: 1})
 	for _, cut := range []int64{1 << 20, afterBig} { // inside big.bin; right after its end frame
 		dst := t.TempDir()
 		_, rr := session(t, s, dst, cut)
@@ -203,7 +203,7 @@ func TestResumeOfAForeignPartStartsOver(t *testing.T) {
 	}
 }
 
-// The receiver's digest over what is on its disk must equal the sender's:
+// The receiver's digest over what is on its disk must equal the manifest's:
 // a file whose bytes differ refuses the transfer and nothing is committed
 // (spec Finish, mutant no-final-check); a refused transfer is not resumed,
 // so its stage is removed (spec Crash to an empty part).
@@ -212,13 +212,13 @@ func TestDigestMismatchCommitsNothing(t *testing.T) {
 	a, b := net.Pipe()
 	go func() {
 		c := newConn(a)
-		_ = c.writeJSON(frameManifest, Manifest{Version: Version, Entries: []Entry{{Path: "f", Size: 3, Mode: 0o644}}})
+		_ = c.writeJSON(frameManifest, Manifest{Version: Version, Entries: []Entry{{Path: "f", Size: 3, Mode: 0o644, SHA256: strings.Repeat("0", 64)}}})
 		_ = c.flush()
 		var w want
 		_ = c.readJSON(frameWant, &w)
 		_ = c.writeJSON(frameStart, start{Index: 0})
 		_ = c.write(frameData, []byte("abc"))
-		_ = c.writeJSON(frameEnd, end{Index: 0, SHA256: strings.Repeat("0", 64)})
+		_ = c.writeJSON(frameEnd, end{Index: 0})
 		_ = c.write(frameDone, nil)
 		_ = c.flush()
 		_, _ = io.Copy(io.Discard, a)
@@ -275,7 +275,14 @@ func TestReceiverRefusesUnsafeOffers(t *testing.T) {
 		"taken":      {{Path: "taken", Size: 1}},
 		"twice":      {{Path: "x", Size: 1}, {Path: "x", Size: 1}},
 		"negative":   {{Path: "x", Size: -1}},
+		"no-digest":  {{Path: "x", Size: 1}},
+		"bad-digest": {{Path: "x", Size: 1, SHA256: "00"}},
 	} {
+		for i := range es { // a valid digest, so each is refused for its own reason
+			if es[i].SHA256 == "" && name != "no-digest" {
+				es[i].SHA256 = strings.Repeat("0", 64)
+			}
+		}
 		a, b := net.Pipe()
 		got := make(chan Answer, 1)
 		go func() {
@@ -492,6 +499,40 @@ func TestCommitStoppedByACrashIsFinished(t *testing.T) {
 		}
 		if b, err := os.ReadFile(filepath.Join(dst, "b", "in", "f")); err != nil || string(b) != "nested" {
 			t.Fatalf("b/in/f: %q, %v", b, err)
+		}
+	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n *int64
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	*c.n += int64(n)
+	return n, err
+}
+
+// A session reads each file once: the manifest carries its digest (taken
+// when it was offered), and the bytes served are checked against it.
+func TestServeReadsEachFileOnce(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	var n int64
+	readFile = func(f *os.File) io.Reader { return countingReader{f, &n} }
+	defer func() { readFile = func(f *os.File) io.Reader { return f } }()
+	sr, rr := session(t, s, t.TempDir(), 0)
+	if sr.err != nil || !rr.a.OK {
+		t.Fatalf("sender %+v, receiver %+v", sr, rr)
+	}
+	if n != 1<<20+5 {
+		t.Fatalf("read %d bytes of files for %d", n, 1<<20+5)
+	}
+	for _, e := range s.Manifest.Entries {
+		if !e.Dir && len(e.SHA256) != 64 {
+			t.Fatalf("%s: no digest in the manifest", e.Path)
 		}
 	}
 }

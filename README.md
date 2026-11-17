@@ -19,7 +19,9 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   the relay's help) and move the session to it when it works; the relay
   carries the session until then and whenever the direct path dies.
 - **Verified.** Nothing lands in the receiving directory until every
-  file's SHA-256 over what is on the receiver's disk equals the sender's.
+  file's SHA-256 over what is on the receiver's disk equals the one the
+  sender offered (taken when it started serving; a file changed since is
+  refused).
   A name that already exists there refuses the transfer.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory beside it); the receiver resumes by itself, and
