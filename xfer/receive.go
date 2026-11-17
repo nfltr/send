@@ -45,6 +45,13 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if err != nil {
 		return Answer{}, noEOF(err)
 	}
+	if t == frameAnswer { // the sender refused the session (Refuse)
+		var a Answer
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return Answer{}, fmt.Errorf("%w: answer: %v", ErrProtocol, err)
+		}
+		return a, fmt.Errorf("%w: %s", ErrRefused, a.Message)
+	}
 	if t != frameManifest {
 		return Answer{}, fmt.Errorf("%w: frame %q, want the manifest", ErrProtocol, t)
 	}

@@ -127,6 +127,20 @@ func (c *conn) writeJSON(t byte, v any) error {
 
 func (c *conn) flush() error { return c.w.Flush() }
 
+// Refuse answers a session, before the manifest, with a refusal (a sender
+// that serves no more sessions now): the receiver's Receive returns
+// ErrRefused with message.
+func Refuse(w io.Writer, message string) error {
+	b, err := json.Marshal(Answer{Message: message})
+	if err != nil {
+		return err
+	}
+	h := [5]byte{frameAnswer}
+	binary.BigEndian.PutUint32(h[1:], uint32(len(b))) // #nosec G115 -- a short message
+	_, err = w.Write(append(h[:], b...))
+	return err
+}
+
 // ErrProtocol is a frame the peer should not have sent.
 var ErrProtocol = errors.New("nfltr-send: protocol error")
 

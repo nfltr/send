@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -187,6 +188,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	fmt.Fprintf(os.Stderr, "serving %d files, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, bytes)
 	fmt.Fprintln(out, ln.Address())
 	done := make(chan struct{}, 1)
+	sessions := newLimiter(maxSessions, idleLimit)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -204,7 +206,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 			}
 			return fail(3, enrolHint(err, anon))
 		}
-		go func() {
+		sessions.take(c, func(c net.Conn) {
 			defer c.Close() //nolint:errcheck
 			t0 := time.Now()
 			a, sent, err := src.Serve(c)
@@ -223,8 +225,63 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 					_ = ln.Close()
 				}
 			}
+		})
+	}
+}
+
+// Sessions: at most maxSessions served at once (the address is a bearer
+// capability: whoever holds it can open sessions), each ended after
+// idleLimit with no byte read or written.
+// ponytail: idleLimit also bounds the receiver's read-back of one file
+// before its next frame (about 180 GB at 100 MB/s); progress frames
+// during that read if larger files must pass.
+const (
+	maxSessions = 16
+	idleLimit   = 30 * time.Minute
+)
+
+// limiter caps the sessions served at once and ends idle ones.
+type limiter struct {
+	slots chan struct{}
+	idle  time.Duration
+}
+
+func newLimiter(n int, idle time.Duration) limiter {
+	return limiter{slots: make(chan struct{}, n), idle: idle}
+}
+
+// take serves c with serve in a goroutine while a slot is free; with none
+// it refuses c (xfer.Refuse: the receiver exits refused) and closes it.
+func (l limiter) take(c net.Conn, serve func(net.Conn)) {
+	select {
+	case l.slots <- struct{}{}:
+		go func() {
+			defer func() { <-l.slots }()
+			serve(idleConn{c, l.idle})
+		}()
+	default:
+		go func() {
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = xfer.Refuse(c, fmt.Sprintf("sender busy: %d sessions already; try again later", cap(l.slots)))
+			_ = c.Close()
 		}()
 	}
+}
+
+// idleConn ends a session that reads or writes nothing for d.
+type idleConn struct {
+	net.Conn
+	d time.Duration
+}
+
+func (c idleConn) Read(p []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.d))
+	return c.Conn.Read(p)
+}
+
+func (c idleConn) Write(p []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.d))
+	return c.Conn.Write(p)
 }
 
 func receiveCmd(ctx context.Context, args []string) int {
