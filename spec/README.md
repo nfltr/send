@@ -101,9 +101,67 @@ receivers, two faults: 1250 states.
 | `Open` (the receiver's claim, the prefix check, the offset) | `xfer/receive.go` `parts`, `open`; `xfer/send.go` `sendFile` |
 | `Send` | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameData) |
 | `Finish` (the digest over what is on disk, discard on mismatch) | `xfer/receive.go` `verify`, `commit` |
-| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`) and an abandoned one's (`sweep`, `StageLife`) |
+| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`, `drop`) and an abandoned one's (`sweep`, `StageLife`) |
+| `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` and `xfer/send.go` `sendFile` (the prefix check, between sessions) |
 | `Change` | `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
 | `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `xfer/lock_*.go` |
-| `Commit.tla` `Begin` (the taken check, the intent) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
-| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (the renames, the moved entries compared with the manifest: `placed`, the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive` and `Answer.keep` (the stage kept) |
-| `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` |
+| `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
+| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
+| `Commit.tla` `Refuse` | `xfer/receive.go` `Receive`, `drop` |
+| `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
+| `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `xfer/trace_on.go` (the recorder), `xfer/trace_off.go`; the call sites in `xfer/receive.go` (behind `traceOn`) |
+
+## Traces
+
+`make spec-traces` (`spec/traces.sh`) runs the xfer tests with
+`-tags sendtrace`: `xfer/trace_on.go` writes one NDJSON line per model step
+a receiver takes, per generation of a stage (from its creation to its
+removal), one file for Commit.tla and one per non-empty file for
+Resume.tla. Each is checked with TLC (`TraceCommit.tla`, `TraceResume.tla`,
+`-coverage 1`): accepted when a behaviour of the model takes every line
+(`TraceNotDone` violated); a line that maps to no action rejects it. The
+actions no accepted behaviour takes are listed as test gaps (none now; the
+tests `TestPartWhoseTailWasLostResumes`,
+`TestNameTakenDuringTheTransferRefusesTheCommit` and
+`TestStaleStageOfACutTransferIsRemoved` closed Crash, Begin's refusal and
+Expire). Resume's `Change` is not reachable in the code: a changed file is
+another offer, whose stage the manifest's digest names. Without the tag the
+recorder is `xfer/trace_off.go`, every call site behind the constant
+`traceOn`: no code in a release binary. 82 traces, about 10 s.
+
+| line (code) | action |
+|---|---|
+| Commit `Init` {n} (`newReceiver` makes the stage) | the model's constants: N tops; P the receivers named |
+| `Open` {p, rec} / `Busy` / `Taken` (`newReceiver`, the lock taken or not, under the recorder's mutex) | `Open(p)`; Busy and Taken a stutter step whose model reason holds (the lock held or the stage just finished; a name taken) |
+| `Write` {t}, `Verify` {t} (`run`: a top's first file started; its last file verified; at `commit`, a top holding no file) | `Write`, `Verify` |
+| `Begin`, `BeginRefused` (`commit`: the intent synced; a name taken) | `Begin` |
+| `Rename` {t}, `RenameRefused` {t}, `Stop` (`commit`, per top in order; a receiver that died in its commit: `end`) | `Rename`, `Stop` |
+| `Finish`, `Refuse` (before the stage's removal under its lock), `Cut` (`end`: the lock released before the commit) | `Finish`, `Refuse`, `Cut` |
+| `Expire` (`finishStage`: a stale stage without its intent) | `Expire`; of a stage holding nothing, a stutter |
+| Resume `Init` {n} | N: the file's length in chunks of `maxData` bytes |
+| `Open` {part, off} (`run`, a start frame: the part on disk before the cut to the offset, as chunk digests; the offset in chunks) | `Open`; once verified, `Served` |
+| `Send` {i, v} (a chunk complete on disk), `Finish` {ok} (`verify`), `Cut` (the session ended inside the file) | `Send`, `Finish`, `Cut` |
+| hidden | Commit `Foreign`, `Replace` (someone else's names); Resume `Rot`, `Crash`, `Change` (taken only towards the next line), the sender's file `src` one whose chunk at each position was sent there |
+
+Abstractions and limits: the tests run receivers and senders as goroutines
+of one process, and receivers meet only through the stage's lock, whose
+acquire and release the recorder writes atomically with their lines, so one
+file in write order is a linearization (no vector clock); receivers in
+separate processes are not traced. Senders are not recorded. A chunk is
+`maxData` bytes; a part not cut at a chunk boundary (a sender that frames
+otherwise, then a resume) is logged with offset -1 and rejected. Empty
+files are not in Resume (its committed `<<>>` is "not committed").
+
+| mutant trace (`spec/traces/`) | the failure | invariant it protects |
+|---|---|---|
+| `mutant-commit-cut-resume` | a file finished after a clean end mid-file | Resume `Safe` |
+| `mutant-no-prefix-check-resume` | a resume from a part that is not the sender's prefix | Resume `Safe` |
+| `mutant-sweep-deletes-intent-commit` | the sweep removes a stage holding its intent | `Kept` |
+| `mutant-no-lock-commit` | a second receiver opens a held stage | `Intact` |
+| `mutant-finish-part-way-commit` | a commit finished with a top not in place | `Committed` |
+| `mutant-no-intent-commit` | a recovery without an intent record | `AllOrNone` |
+| `mutant-replace-commit` | a rename onto a name someone else took | `NoReplace` |
+| `mutant-unknown-step-commit` | a step that is no action of the model | (rule: every line maps to an action) |
+
+`Done` (both models) is a liveness property: no finite trace violates it,
+so it has no mutant trace.

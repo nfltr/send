@@ -794,3 +794,70 @@ func TestSweepRefusesAReplacedEntry(t *testing.T) {
 		t.Fatalf("a.txt: %q, %v: the foreign entry changed", b, err)
 	}
 }
+
+// A receiver crash that lost the tail of a part (the trace check's
+// Resume.tla Crash) resumes from what the part still holds.
+func TestPartWhoseTailWasLostResumes(t *testing.T) {
+	src := tree(t, 2<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	_, _ = session(t, s, dst, 1<<20)
+	must(t, os.Truncate(filepath.Join(dst, names(t, dst)[0], "data", "big.bin"), maxData))
+	sr, rr := session(t, s, dst, 0)
+	if rr.err != nil || !rr.a.OK || sr.sent != 2<<20-maxData+5 {
+		t.Fatalf("sender %+v, receiver %+v, want all but the part's chunk sent", sr, rr)
+	}
+	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+		t.Fatal("differs from the source")
+	}
+}
+
+// A name that appears while the files are received refuses the commit
+// before its intent: the stage stays, the name is kept (spec Commit.tla
+// Begin).
+func TestNameTakenDuringTheTransferRefusesTheCommit(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	_, _, resume, first := pausedReceive(t, s, dst)
+	must(t, os.WriteFile(filepath.Join(dst, "data"), []byte("someone else's"), 0o600))
+	close(resume)
+	if err := <-first; err != nil {
+		t.Fatalf("the receive: %v, want an answer refusing the commit", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "data")); err != nil || string(b) != "someone else's" {
+		t.Fatalf("data: %q, %v: replaced", b, err)
+	}
+	if got := names(t, dst); len(got) != 2 { // data and the stage
+		t.Fatalf("dst holds %q, want the stage kept", got)
+	}
+}
+
+// A cut transfer's stage, not written to for StageLife and holding no
+// intent, is removed by another offer's receive (spec Commit.tla Expire).
+func TestStaleStageOfACutTransferIsRemoved(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	_, _ = session(t, s, dst, 1<<19)
+	old := time.Now().Add(-StageLife - time.Hour)
+	must(t, filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && p != dst {
+			err = os.Chtimes(p, old, old)
+		}
+		return err
+	}))
+	other := filepath.Join(t.TempDir(), "other.txt")
+	must(t, os.WriteFile(other, []byte("another offer"), 0o644))
+	s2, err := NewSource([]string{other})
+	must(t, err)
+	if sr, rr := session(t, s2, dst, 0); !rr.a.OK {
+		t.Fatalf("another offer: sender %+v, receiver %+v", sr, rr)
+	}
+	if got := names(t, dst); !slices.Equal(got, []string{"other.txt"}) {
+		t.Fatalf("dst holds %q, want only other.txt", got)
+	}
+}

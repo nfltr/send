@@ -3,8 +3,11 @@
 
 # make check: gofmt, vet (here and for windows/amd64), the windows/amd64
 # build, -race tests, 10 s of xfer's fuzz target; make spec: the TLA+ model's invariants, witnesses and
-# mutants (spec/README.md). Both run in CI, and the tests on Windows too.
-.PHONY: check spec release release-sign release-verify release-dryrun
+# mutants (spec/README.md); make spec-traces: the xfer tests with
+# -tags sendtrace, each trace they write checked against its model with TLC,
+# and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
+# and the tests on Windows too.
+.PHONY: check spec spec-traces release release-sign release-verify release-dryrun
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	go vet ./...
@@ -16,6 +19,10 @@ check:
 spec:
 	@set -e; t=$$(sh scripts/fetch-tla.sh); \
 	TLA_JAVA=$$(echo "$$t" | sed -n 1p) TLA_JAR=$$(echo "$$t" | sed -n 2p) sh spec/check.sh
+
+spec-traces:
+	@set -e; t=$$(sh scripts/fetch-tla.sh); \
+	TLA_JAVA=$$(echo "$$t" | sed -n 1p) TLA_JAR=$$(echo "$$t" | sed -n 2p) sh spec/traces.sh
 
 # Release files in dist/ (scripts/release.sh): make release builds the six
 # binaries and SHA256SUMS, reproducibly; make release-sign SIGNING_KEY=<key>
