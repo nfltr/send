@@ -74,7 +74,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if err != nil {
 		return a, err
 	}
-	if !a.OK { // refused: not resumed, so nothing of it stays
+	if !a.OK && !a.keep { // refused: not resumed, so nothing of it stays
 		_ = r.sr.Close()
 		_ = r.root.RemoveAll(r.stage)
 	}
@@ -285,8 +285,8 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if f != nil || a.Files != countFiles(r.m) {
 				return fail("done with %d of %d files", a.Files, countFiles(r.m))
 			}
-			if err := r.commit(); err != nil {
-				return Answer{Message: err.Error()}, nil
+			if err := r.commit(); err != nil { // verified: the stage stays for the next session
+				return Answer{Message: err.Error(), keep: true}, nil
 			}
 			a.OK = true
 			return a, nil
@@ -339,6 +339,9 @@ func (r *receiver) verify(e Entry, want string) error {
 // commit makes the directories, gives files their mtimes, and moves every
 // top-level name into place, each only while dir still does not hold it;
 // then syncs dir and removes the stage.
+// rename is os.Root.Rename (a test fails one).
+var rename = (*os.Root).Rename
+
 func (r *receiver) commit() error {
 	for _, e := range r.m.Entries {
 		var err error
@@ -355,8 +358,13 @@ func (r *receiver) commit() error {
 	if top := r.taken(); top != "" {
 		return fmt.Errorf("%q exists in the receiving directory", top)
 	}
-	for _, top := range r.tops {
-		if err := r.root.Rename(path.Join(r.stage, top), top); err != nil {
+	// All or nothing: a rename that fails moves the ones before it back,
+	// so the stage stays whole and the next session commits it.
+	for i, top := range r.tops {
+		if err := rename(r.root, path.Join(r.stage, top), top); err != nil {
+			for _, back := range slices.Backward(r.tops[:i]) {
+				_ = rename(r.root, back, path.Join(r.stage, back))
+			}
 			return err
 		}
 	}

@@ -93,6 +93,7 @@ type Answer struct {
 	Message string `json:"message,omitempty"`
 	Files   int    `json:"files"`
 	Bytes   int64  `json:"bytes"`
+	keep    bool   // a commit that failed after verification: the stage stays
 }
 
 // conn frames one session.

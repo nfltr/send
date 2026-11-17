@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"net"
@@ -348,5 +349,47 @@ func BenchmarkTransfer(b *testing.B) {
 			b.Fatal(a, err)
 		}
 		_ = y.Close()
+	}
+}
+
+// A commit whose rename fails part way moves nothing into the receiving
+// directory and keeps the verified stage: the next session resends nothing
+// and commits every top-level entry (review 2026-11-17, finding 1: the
+// first rename landed, the stage was deleted, the retry was refused).
+func TestFailedCommitKeepsTheStage(t *testing.T) {
+	base := t.TempDir()
+	var srcs []string
+	for _, n := range []string{"a.txt", "b.txt", "c.txt"} {
+		p := filepath.Join(base, n)
+		must(t, os.WriteFile(p, []byte("content of "+n), 0o644))
+		srcs = append(srcs, p)
+	}
+	s, err := NewSource(srcs)
+	must(t, err)
+	dst := t.TempDir()
+	calls := 0
+	rename = func(r *os.Root, old, new string) error {
+		if calls++; calls == 2 {
+			return errors.New("planted rename failure")
+		}
+		return r.Rename(old, new)
+	}
+	defer func() { rename = (*os.Root).Rename }()
+	_, rr := session(t, s, dst, 0)
+	if rr.a.OK {
+		t.Fatalf("receiver %+v: a failed commit answered ok", rr)
+	}
+	for _, n := range []string{"a.txt", "b.txt", "c.txt"} {
+		if _, err := os.Lstat(filepath.Join(dst, n)); err == nil {
+			t.Fatalf("%s landed although the commit failed", n)
+		}
+	}
+	rename = (*os.Root).Rename
+	sr, rr := session(t, s, dst, 0)
+	if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent != 0 {
+		t.Fatalf("retry: sender %+v, receiver %+v (want ok, nothing resent)", sr, rr)
+	}
+	if got := names(t, dst); !slices.Equal(got, []string{"a.txt", "b.txt", "c.txt"}) {
+		t.Fatalf("dst holds %q", got)
 	}
 }
