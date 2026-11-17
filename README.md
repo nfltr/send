@@ -89,7 +89,7 @@ $ grep " $f\$" SHA256SUMS | sha256sum -c && chmod +x $f && mv $f ~/bin/nfltr-sen
 
 ```console
 $ go build ./cmd/nfltr-send
-$ make check   # gofmt, vet, -race tests
+$ make check   # gofmt, vet, -race tests, a short fuzz run
 $ make spec    # the TLA+ model
 $ make release-dryrun   # the release files in dist/, built twice and compared, signed with a throwaway key
 ```

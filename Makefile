@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # make check: gofmt, vet (here and for windows/amd64), the windows/amd64
-# build, -race tests; make spec: the TLA+ model's invariants, witnesses and
+# build, -race tests, 10 s of xfer's fuzz target; make spec: the TLA+ model's invariants, witnesses and
 # mutants (spec/README.md). Both run in CI, and the tests on Windows too.
 .PHONY: check spec release release-sign release-verify release-dryrun
 check:
@@ -11,6 +11,7 @@ check:
 	GOOS=windows GOARCH=amd64 go vet ./...
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/nfltr-send
 	go test -race ./...
+	go test -run '^$$' -fuzz FuzzReceive -fuzztime 10s ./xfer/
 
 spec:
 	@set -e; t=$$(sh scripts/fetch-tla.sh); \
