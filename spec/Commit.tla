@@ -59,9 +59,9 @@ Arrive ==
     /\ UNCHANGED <<dir, pc, next, intent, faults, crashed>>
 
 \* Foreign: a name of the offer's appears in the directory, someone else's,
-\* while no commit runs (README, assumptions).
+\* at any time, a commit's renames included.
 Foreign ==
-    /\ pc = "idle" /\ faults < MaxFaults
+    /\ pc # "done" /\ faults < MaxFaults
     /\ \E t \in Tops : dir[t] = "none" /\ dir' = [dir EXCEPT ![t] = "foreign"]
     /\ faults' = faults + 1
     /\ UNCHANGED <<stage, pc, next, intent, arrived, crashed>>
@@ -83,14 +83,30 @@ Recover ==
     /\ UNCHANGED <<stage, dir, intent, faults, arrived, crashed>>
 
 \* Rename: the next entry lands; one the stage no longer holds is taken as
-\* moved already.
+\* moved already. The rename does not replace: a name that appeared since
+\* the check fails it, and the commit stops with the stage and its intent
+\* kept (mutant replace: a rename that replaces).
 Rename ==
     /\ pc = "renaming" /\ next <= N
-    /\ IF next \in stage
-          THEN stage' = stage \ {next} /\ dir' = [dir EXCEPT ![next] = "ours"]
-          ELSE UNCHANGED <<stage, dir>>
-    /\ next' = next + 1
-    /\ UNCHANGED <<pc, intent, faults, arrived, crashed>>
+    /\ IF next \notin stage
+          THEN UNCHANGED <<stage, dir, pc>> /\ next' = next + 1
+       ELSE IF dir[next] = "none" \/ Mutant = "replace"
+          THEN /\ stage' = stage \ {next} /\ dir' = [dir EXCEPT ![next] = "ours"]
+               /\ next' = next + 1 /\ UNCHANGED pc
+       ELSE pc' = "idle" /\ UNCHANGED <<stage, dir, next>>
+    /\ UNCHANGED <<intent, faults, arrived, crashed>>
+
+\* Expire: the sweep of another receive finds the stage stale (nobody wrote
+\* to it for StageLife) with no intent record of its own: an abandoned
+\* offer, removed; received again, it starts over. A stale stage with its
+\* intent is finished by that sweep instead (Recover, by another process).
+\* Mutant sweep-deletes-intent: the intent's stage removed too.
+Expire ==
+    /\ pc = "idle" /\ faults < MaxFaults /\ stage # {}
+    /\ (intent # "ours" \/ Mutant = "sweep-deletes-intent")
+    /\ stage' = {} /\ intent' = "none" /\ faults' = faults + 1
+    /\ arrived' = IF intent = "ours" THEN arrived ELSE {}
+    /\ UNCHANGED <<dir, pc, next, crashed>>
 
 \* Stop: a rename fails, or the receiver crashes, mid-commit: what landed
 \* stays, and so do the stage and its intent (mutant drop-stage: a failed
@@ -113,7 +129,7 @@ Served == pc = "done" /\ UNCHANGED vars
 \* Refused: a foreign name holds the offer back; the stage stays.
 Refused == pc = "idle" /\ (\E t \in Tops : dir[t] = "foreign") /\ UNCHANGED vars
 
-Next == Arrive \/ Foreign \/ Begin \/ Recover \/ Rename \/ Stop \/ Finish \/ Served \/ Refused
+Next == Arrive \/ Foreign \/ Expire \/ Begin \/ Recover \/ Rename \/ Stop \/ Finish \/ Served \/ Refused
 
 Spec == Init /\ [][Next]_vars
         /\ WF_vars(Arrive) /\ WF_vars(Begin) /\ WF_vars(Recover) /\ WF_vars(Rename) /\ WF_vars(Finish)
@@ -131,6 +147,9 @@ Committed == pc = "done" => stage = {} /\ \A t \in Tops : dir[t] = "ours"
 \* finished by the next receive).
 AllOrNone == pc = "idle" /\ intent # "ours" => \A t \in Tops : dir[t] # "ours"
 
+\* NoReplace: another's name is never replaced.
+NoReplace == [][\A t \in Tops : dir[t] = "foreign" => dir'[t] = "foreign"]_dir
+
 \* Done: with finitely many faults, the offer is committed, or a foreign
 \* name refuses it (the stage kept).
 Done == <>(pc = "done" \/ \E t \in Tops : dir[t] = "foreign")
@@ -139,4 +158,6 @@ Done == <>(pc = "done" \/ \E t \in Tops : dir[t] = "foreign")
 WitnessPartWay == ~(pc = "renaming" /\ stage # {} /\ \E t \in Tops : dir[t] = "ours")
 WitnessRecoveredAfterCrash == ~(pc = "done" /\ crashed)
 WitnessForeignRefused == ~(pc = "idle" /\ intent = "ours" /\ \E t \in stage : dir[t] = "foreign")
+WitnessRefusedMidCommit == ~(pc = "idle" /\ (\E t \in stage : dir[t] = "foreign") /\ \E u \in Tops : dir[u] = "ours")
+WitnessExpired == ~(pc = "idle" /\ stage = {} /\ faults > 0 /\ \A t \in Tops : dir[t] # "ours")
 =============================================================================
