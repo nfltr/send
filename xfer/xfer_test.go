@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -352,10 +353,10 @@ func BenchmarkTransfer(b *testing.B) {
 	}
 }
 
-// A commit whose rename fails part way moves nothing into the receiving
-// directory and keeps the verified stage: the next session resends nothing
-// and commits every top-level entry (review 2026-11-17, finding 1: the
-// first rename landed, the stage was deleted, the retry was refused).
+// A commit whose rename fails part way keeps the verified stage and its
+// intent record: the next session resends nothing and commits every
+// top-level entry (review 2026-11-17, finding 1: the first rename landed,
+// the stage was deleted, the retry was refused).
 func TestFailedCommitKeepsTheStage(t *testing.T) {
 	base := t.TempDir()
 	var srcs []string
@@ -379,10 +380,8 @@ func TestFailedCommitKeepsTheStage(t *testing.T) {
 	if rr.a.OK {
 		t.Fatalf("receiver %+v: a failed commit answered ok", rr)
 	}
-	for _, n := range []string{"a.txt", "b.txt", "c.txt"} {
-		if _, err := os.Lstat(filepath.Join(dst, n)); err == nil {
-			t.Fatalf("%s landed although the commit failed", n)
-		}
+	if got := len(names(t, dst)); got != 2 { // a.txt and the stage
+		t.Fatalf("after a failed commit dst holds %q", names(t, dst))
 	}
 	rename = (*os.Root).Rename
 	sr, rr := session(t, s, dst, 0)
@@ -442,5 +441,57 @@ func TestSenderRefusesAFileRewrittenWhileSent(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dst, "f.bin")); err == nil {
 		t.Fatal("a file changed while sent landed")
+	}
+}
+
+// A receiver that dies after some of a commit's renames (runtime.Goexit
+// in the rename seam: no code of commit runs after it) leaves the intent
+// record; the next receive of the same offer finishes the commit, sending
+// nothing again (spec Commit.tla Recover, WitnessRecoveredAfterCrash).
+func TestCommitStoppedByACrashIsFinished(t *testing.T) {
+	base := t.TempDir()
+	var srcs []string
+	for _, n := range []string{"a.txt", "b", "c.txt"} {
+		p := filepath.Join(base, n)
+		if n == "b" {
+			must(t, os.MkdirAll(filepath.Join(p, "in"), 0o755))
+			must(t, os.WriteFile(filepath.Join(p, "in", "f"), []byte("nested"), 0o644))
+		} else {
+			must(t, os.WriteFile(p, []byte("content of "+n), 0o644))
+		}
+		srcs = append(srcs, p)
+	}
+	s, err := NewSource(srcs)
+	must(t, err)
+	for k := 1; k <= 2; k++ {
+		dst := t.TempDir()
+		calls := 0
+		rename = func(r *os.Root, old, new string) error {
+			if calls++; calls > k {
+				runtime.Goexit() // the receiver dies here
+			}
+			return r.Rename(old, new)
+		}
+		x, y := net.Pipe()
+		go func() { _, _, _ = s.Serve(x) }()
+		done := make(chan struct{})
+		go func() { defer close(done); _, _ = Receive(y, dst, nil) }()
+		<-done
+		_ = y.Close()
+		_ = x.Close()
+		rename = (*os.Root).Rename
+		if got := len(names(t, dst)); got != k+1 { // k entries and the stage
+			t.Fatalf("after a crash at rename %d: dst holds %q", k+1, names(t, dst))
+		}
+		sr, rr := session(t, s, dst, 0)
+		if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent != 0 || rr.a.Files != 3 {
+			t.Fatalf("crash at rename %d, then: sender %+v, receiver %+v (want ok, nothing resent)", k+1, sr, rr)
+		}
+		if got := names(t, dst); !slices.Equal(got, []string{"a.txt", "b", "c.txt"}) {
+			t.Fatalf("dst holds %q", got)
+		}
+		if b, err := os.ReadFile(filepath.Join(dst, "b", "in", "f")); err != nil || string(b) != "nested" {
+			t.Fatalf("b/in/f: %q, %v", b, err)
+		}
 	}
 }

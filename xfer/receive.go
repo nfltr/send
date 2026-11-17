@@ -67,6 +67,16 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 		return a, fmt.Errorf("%w: %v", ErrRefused, err)
 	}
 	defer r.close()
+	if r.finishing { // a commit stopped part way: finish it, nothing is sent
+		a := Answer{Files: countFiles(m), Bytes: countBytes(m), OK: true}
+		if err := r.commit(); err != nil {
+			a = Answer{Message: err.Error(), keep: true}
+		}
+		if err := c.writeJSON(frameAnswer, a); err != nil {
+			return a, err
+		}
+		return a, c.flush()
+	}
 	parts, err := r.parts()
 	if err != nil {
 		return Answer{}, err
@@ -92,11 +102,22 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 }
 
 type receiver struct {
-	m     Manifest
-	root  *os.Root // dir
-	stage string   // its name in dir
-	sr    *os.Root // the stage
-	tops  []string
+	m         Manifest
+	sum       string   // the manifest's SHA-256
+	root      *os.Root // dir
+	stage     string   // its name in dir
+	sr        *os.Root // the stage
+	tops      []string
+	finishing bool // the stage holds this offer's intent: its commit stopped part way
+}
+
+// intentName is the intent record's name in the stage: the offer's
+// manifest digest, written and synced before a commit's first rename
+// (spec Commit.tla Begin). Entries never start with StagePrefix.
+const intentName = StagePrefix + "intent"
+
+type intent struct {
+	Manifest string `json:"manifest"`
 }
 
 // newReceiver checks the manifest (relative names inside dir, files and
@@ -129,12 +150,18 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 		return nil, err
 	}
 	r.root = root
-	if top := r.taken(); top != "" {
+	sum := sha256.Sum256(raw)
+	r.sum = hex.EncodeToString(sum[:])
+	r.stage = StagePrefix + r.sum[:16]
+	// The offer's own intent (spec Recover): its names in dir are its own
+	// commit's; another record (torn, another offer's) is not trusted.
+	var in intent
+	if b, err := root.ReadFile(path.Join(r.stage, intentName)); err == nil && json.Unmarshal(b, &in) == nil && in.Manifest == r.sum {
+		r.finishing = true
+	} else if top := r.taken(); top != "" {
 		_ = root.Close()
 		return nil, fmt.Errorf("%q exists in the receiving directory", top)
 	}
-	sum := sha256.Sum256(raw)
-	r.stage = StagePrefix + hex.EncodeToString(sum[:8])
 	r.sweep()
 	if err := root.Mkdir(r.stage, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		_ = root.Close()
@@ -343,53 +370,104 @@ func (r *receiver) verify(e Entry, want string) error {
 	return fmt.Errorf("%q: SHA-256 of what landed is not the sender's; removed, the next receive sends it again", e.Path)
 }
 
-// commit makes the directories, gives files their mtimes, and moves every
-// top-level name into place, each only while dir still does not hold it;
-// syncs the offer's directories, then dir, and removes the stage.
+// commit makes the directories, gives files their mtimes, syncs them,
+// writes the intent record, and moves every top-level name into place;
+// then syncs dir and removes the stage (spec Commit.tla Begin, Rename,
+// Finish). Finishing a commit that stopped part way, it moves only what
+// the stage still holds, each only while dir does not hold it (Recover).
+// A rename that fails leaves things as they are: the next receive
+// finishes (Stop).
 // rename is os.Root.Rename (a test fails one).
 var rename = (*os.Root).Rename
 
 func (r *receiver) commit() error {
-	for _, e := range r.m.Entries {
-		var err error
-		if e.Dir {
-			err = r.sr.MkdirAll(e.Path, 0o755)
-		} else if e.MTime != 0 {
-			t := time.Unix(0, e.MTime)
-			err = r.sr.Chtimes(e.Path, t, t)
+	if !r.finishing {
+		for _, e := range r.m.Entries {
+			var err error
+			if e.Dir {
+				err = r.sr.MkdirAll(e.Path, 0o755)
+			} else if e.MTime != 0 {
+				t := time.Unix(0, e.MTime)
+				err = r.sr.Chtimes(e.Path, t, t)
+			}
+			if err != nil {
+				return err
+			}
 		}
-		if err != nil {
+		if err := r.syncDirs(); err != nil {
+			return err
+		}
+		if top := r.taken(); top != "" {
+			return fmt.Errorf("%q exists in the receiving directory", top)
+		}
+		if err := r.writeIntent(); err != nil {
 			return err
 		}
 	}
-	if err := r.syncDirs(); err != nil {
-		return err
-	}
-	if top := r.taken(); top != "" {
-		return fmt.Errorf("%q exists in the receiving directory", top)
-	}
-	// All or nothing: a rename that fails moves the ones before it back,
-	// so the stage stays whole and the next session commits it.
-	for i, top := range r.tops {
-		if err := rename(r.root, path.Join(r.stage, top), top); err != nil {
-			for _, back := range slices.Backward(r.tops[:i]) {
-				_ = rename(r.root, back, path.Join(r.stage, back))
+	var move []string
+	for _, top := range r.tops {
+		_, err := r.sr.Lstat(top)
+		switch {
+		case errors.Is(err, fs.ErrNotExist): // moved before the stop
+			if _, err := r.root.Lstat(top); err != nil {
+				return fmt.Errorf("%q is neither staged nor in place: %w", top, err)
 			}
+		case err != nil:
+			return err
+		default:
+			if _, err := r.root.Lstat(top); !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("%q exists in the receiving directory", top)
+			}
+			move = append(move, top)
+		}
+	}
+	for _, top := range move {
+		if err := rename(r.root, path.Join(r.stage, top), top); err != nil {
 			return err
 		}
 	}
 	// Windows has no directory sync (FlushFileBuffers on a directory is
 	// refused); NTFS journals the renames.
-	if runtime.GOOS != "windows" {
-		if d, err := r.root.Open("."); err == nil { // the renames on stable storage
-			err = d.Sync()
-			_ = d.Close()
-			if err != nil {
-				return err
-			}
-		}
+	if err := r.syncDir(r.root); err != nil { // the renames on stable storage
+		return err
 	}
 	return r.root.RemoveAll(r.stage)
+}
+
+// writeIntent writes the intent record and puts it on stable storage.
+func (r *receiver) writeIntent() error {
+	b, err := json.Marshal(intent{Manifest: r.sum})
+	if err != nil {
+		return err
+	}
+	f, err := r.sr.OpenFile(intentName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return r.syncDir(r.sr)
+}
+
+// syncDir syncs root's directory; not on Windows.
+func (r *receiver) syncDir(root *os.Root) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	_ = d.Close()
+	return err
 }
 
 // syncDirs puts the offer's directories' entries on stable storage,
@@ -424,6 +502,13 @@ func (r *receiver) syncDirs() error {
 		}
 	}
 	return nil
+}
+
+func countBytes(m Manifest) (n int64) {
+	for _, e := range m.Entries {
+		n += e.Size
+	}
+	return n
 }
 
 func countFiles(m Manifest) int {
