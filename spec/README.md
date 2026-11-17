@@ -7,10 +7,15 @@ another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spe
 with `-coverage 1`, each witness (must be violated) and each mutant (must
 be caught). N = 3 chunks, two chunk values, two faults: 608 states.
 
-`Commit.tla` models the step after it: an offer's top-level entries, every
-file verified in the stage, renamed one by one into the receiving
-directory, where any rename can fail. `spec/check.sh` checks it the same
-way. N = 3 entries, two rename failures: 22 states.
+`Commit.tla` models the step after it: an offer's top-level entries
+arrive verified in the stage; the commit writes an intent record (the
+offer's whole manifest digest) into the stage, synced, then renames the
+entries one by one into the receiving directory. A rename can fail and
+the receiver can crash at any point; either leaves things as they are,
+and the next receive of the same offer finds the intent and rolls forward
+(renames what the stage still holds; a name the stage no longer holds was
+moved). Another's name in the directory refuses the offer. `spec/check.sh`
+checks it the same way. N = 2 entries, two faults: 62 states.
 
 | invariant / property | meaning |
 |---|---|
@@ -34,20 +39,22 @@ way. N = 3 entries, two rename failures: 22 states.
 
 | invariant / property | meaning |
 |---|---|
-| `Kept` | verified data is never deleted: every entry is in the stage or in place |
-| `AllOrNone` | outside a commit the receiving directory holds none or all of the offer's entries |
-| `Done` | with finitely many rename failures, the offer is committed |
+| `Kept` | verified data is never deleted: every entry that arrived is in the stage or in place |
+| `Committed` | a done commit holds every entry in place and no stage; no other's name is taken for the offer's |
+| `AllOrNone` | with no intent pending, the directory holds none of the offer's entries |
+| `Done` | with finitely many faults, the offer is committed, or another's name refuses it (the stage kept) |
 
 | witness (violated) | shows |
 |---|---|
 | `WitnessPartWay` | a commit with some entries in place and some still staged |
-| `WitnessRolledBack` | a failed commit rolled back to between sessions |
-| `WitnessCommitAfterFailure` | a commit after the maximum of rename failures |
+| `WitnessRecoveredAfterCrash` | a commit finished by a later receive after one stopped part way |
+| `WitnessForeignRefused` | an intent pending while another's name holds an entry's name |
 
 | mutant | the failure it plants | caught by |
 |---|---|---|
-| `no-rollback` | a failed rename leaves the entries before it in place | `AllOrNone` |
-| `drop-stage` | a failed commit removes the stage (review 2026-11-17, finding 1) | `Kept` |
+| `drop-stage` | a commit that stops part way removes the stage (review 2026-11-17, finding 1) | `Kept` |
+| `no-intent` | roll forward without an intent record: names in the directory taken as moved | `AllOrNone` |
+| `trust-foreign` | an intent record that is not this offer's (torn, or another offer's) trusted | `Committed` |
 
 ## Environment assumptions
 
@@ -58,7 +65,8 @@ way. N = 3 entries, two rename failures: 22 states.
 | the sender's file does not change while a session sends it; between sessions it may (a check of size and mtime before and after each file, and a second read of the file compared with the bytes sent, refuse a change in a session: `ErrChanged`) | `xfer/send.go` `unchanged`, `sendFile` |
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
 | SHA-256 is collision resistant (the model compares the bytes themselves) | FIPS 180-4 |
-| a rename back of a name the same commit just moved succeeds (same directories, same filesystem); a receiver crash between two renames is outside `Commit.tla`: the entries renamed stay in place, the rest stay staged, and the next receive refuses the taken name | rename(2), `os.Root.Rename` |
+| a rename is atomic across a crash; a synced file and its directory entry survive one | rename(2), fsync(2) |
+| no one else creates an offer's top-level name while its commit runs (between the check and the renames) | `xfer/receive.go` `commit` |
 
 ## Code map
 
@@ -69,5 +77,6 @@ way. N = 3 entries, two rename failures: 22 states.
 | `Finish` (the digest over what is on disk, discard on mismatch) | `xfer/receive.go` `verify`, `commit` |
 | `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`) and an abandoned one's (`sweep`, `StageLife`) |
 | `Change` | `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
-| `Commit.tla` `Begin` (the taken check) | `xfer/receive.go` `commit`, `taken` |
-| `Commit.tla` `Rename`, `Fail`, `Finish` | `xfer/receive.go` `commit` (the renames, the rollback, the sync); `Receive` and `Answer.keep` (the stage kept) |
+| `Commit.tla` `Begin` (the taken check, the intent) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
+| `Commit.tla` `Recover` | `xfer/receive.go` `newReceiver`, `readIntent`, `Receive` |
+| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (the renames, the sync, the stage removed); `Receive` and `Answer.keep` (the stage kept) |

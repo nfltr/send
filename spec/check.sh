@@ -27,12 +27,12 @@ tlc Commit Commit -coverage 1
 zero=$(grep ' of module Commit: 0$' "$tmp/Commit.out" || true)
 if grep -q 'No error has been found' "$tmp/Commit.out" && [ -z "$zero" ]; then echo "ok   Commit: invariants and Done hold, every action taken"
 else echo "FAIL Commit"; cat "$tmp/Commit.out"; fail=1; fi
-for c in WitnessPartWay WitnessRolledBack WitnessCommitAfterFailure; do
+for c in WitnessPartWay WitnessRecoveredAfterCrash WitnessForeignRefused; do
 	tlc Commit "Commit$c"
 	if grep -q "Invariant $c is violated" "$tmp/Commit$c.out"; then echo "ok   Commit $c violated (reachable)"; else echo "FAIL Commit $c not violated"; fail=1; fi
 done
-for m in no-rollback drop-stage; do
+for m in drop-stage no-intent trust-foreign; do
 	tlc Commit "Commit-mutant-$m"
-	if grep -E -q 'Invariant (Kept|AllOrNone) is violated' "$tmp/Commit-mutant-$m.out"; then echo "ok   Commit mutant $m caught"; else echo "FAIL Commit mutant $m not caught"; fail=1; fi
+	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated|Temporal properties were violated' "$tmp/Commit-mutant-$m.out"); then echo "ok   Commit mutant $m caught ($v)"; else echo "FAIL Commit mutant $m not caught"; fail=1; fi
 done
 exit $fail
