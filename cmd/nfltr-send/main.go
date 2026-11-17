@@ -399,7 +399,7 @@ func readAddress(name string) (string, error) {
 func enrolHint(err error, anon bool) error {
 	code := nfnet.CodeOf(err)
 	switch {
-	case anon && code != nfnet.CodeUnreachable: // the relay answered: it refused (relay client v0.22.3 types a registration refused PermissionDenied as reset)
+	case anon && code == nfnet.CodeAuth: // the relay refused with no credential it accepts (ERROR_REASON_UNAUTHENTICATED: auth since relay client v0.22.4)
 		return fmt.Errorf("%w; this relay serves no address without an account: run `nfltr config login` to serve with this machine's certificate", err)
 	case code == nfnet.CodeAuth:
 		return fmt.Errorf("%w; run `nfltr config login` to enrol this machine again", err)
