@@ -6,6 +6,7 @@ package xfer
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -171,8 +172,23 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	if err := unchanged(f, e); err != nil {
 		return n, err
 	}
-	return n, c.writeJSON(frameEnd, end{Index: i, SHA256: hexSum(h)})
+	// Size and mtime miss a rewrite in place that restores them: the file
+	// read again must be the bytes sent, else they are a mix (review
+	// 2026-11-17, F2). ponytail: a second read of every file; a digest
+	// in the manifest, hashed before serving, if that read costs too much.
+	sum := hexSum(h)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return n, err
+	}
+	if again, err := prefixSum(f, e.Size); err != nil || again != sum {
+		return n, errors.Join(fmt.Errorf("%s: its bytes %w", e.Path, ErrChanged), err)
+	}
+	return n, c.writeJSON(frameEnd, end{Index: i, SHA256: sum})
 }
+
+// ErrChanged is a source file that changed since it was offered, or
+// while it was sent.
+var ErrChanged = errors.New("changed since it was offered: send it again")
 
 // unchanged refuses a file whose size or mtime is no longer the manifest's.
 func unchanged(f *os.File, e Entry) error {
@@ -181,7 +197,7 @@ func unchanged(f *os.File, e Entry) error {
 		return err
 	}
 	if fi.Size() != e.Size || fi.ModTime().UnixNano() != e.MTime {
-		return fmt.Errorf("%s changed since it was offered: send it again", e.Path)
+		return fmt.Errorf("%s %w", e.Path, ErrChanged)
 	}
 	return nil
 }

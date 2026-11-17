@@ -393,3 +393,54 @@ func TestFailedCommitKeepsTheStage(t *testing.T) {
 		t.Fatalf("dst holds %q", got)
 	}
 }
+
+// rewriter rewrites file in place (other bytes, the same size and mtime)
+// once the sender has written after bytes to the session.
+type rewriter struct {
+	net.Conn
+	t     *testing.T
+	file  string
+	after int64
+	done  bool
+}
+
+func (w *rewriter) Write(p []byte) (int, error) {
+	if w.after -= int64(len(p)); w.after < 0 && !w.done {
+		w.done = true
+		fi, err := os.Stat(w.file)
+		must(w.t, err)
+		b := make([]byte, fi.Size())
+		_, _ = rand.Read(b)
+		must(w.t, os.WriteFile(w.file, b, 0o644))
+		must(w.t, os.Chtimes(w.file, fi.ModTime(), fi.ModTime()))
+	}
+	return w.Conn.Write(p)
+}
+
+// A file rewritten in place while it is sent, its size and mtime
+// restored, is refused (ErrChanged) rather than sent mixed (review
+// 2026-11-17, finding F2).
+func TestSenderRefusesAFileRewrittenWhileSent(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "f.bin")
+	b := make([]byte, 4<<20)
+	_, _ = rand.Read(b)
+	must(t, os.WriteFile(f, b, 0o644))
+	s, err := NewSource([]string{f})
+	must(t, err)
+	dst := t.TempDir()
+	x, y := net.Pipe()
+	errc := make(chan error, 1)
+	go func() {
+		_, _, err := s.Serve(&rewriter{Conn: x, t: t, file: f, after: 1 << 20})
+		_ = x.Close()
+		errc <- err
+	}()
+	a, _ := Receive(y, dst, nil)
+	_ = y.Close()
+	if err := <-errc; !errors.Is(err, ErrChanged) || a.OK {
+		t.Fatalf("sender %v, receiver %+v: want ErrChanged and nothing committed", err, a)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "f.bin")); err == nil {
+		t.Fatal("a file changed while sent landed")
+	}
+}

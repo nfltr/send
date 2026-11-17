@@ -55,7 +55,7 @@ way. N = 3 entries, two rename failures: 22 states.
 |---|---|
 | the session delivers the sender's bytes in order, unaltered, or ends (it never delivers other bytes) | TLS 1.3 records: AEAD with a per-record sequence nonce (RFC 8446 section 5.3), end to end inside the nf1 session (github.com/nfltr/relay `client/nf1`) |
 | a session's end can look clean (EOF) at any record boundary | crypto/tls returns io.EOF on a close without close_notify at a record boundary (Go `crypto/tls` conn.go); RFC 8446 section 6.1 truncation |
-| the sender's file does not change while a session sends it; between sessions it may (a check of size and mtime before and after each file refuses a change it sees) | `xfer/send.go` `unchanged` |
+| the sender's file does not change while a session sends it; between sessions it may (a check of size and mtime before and after each file, and a second read of the file compared with the bytes sent, refuse a change in a session: `ErrChanged`) | `xfer/send.go` `unchanged`, `sendFile` |
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
 | SHA-256 is collision resistant (the model compares the bytes themselves) | FIPS 180-4 |
 | a rename back of a name the same commit just moved succeeds (same directories, same filesystem); a receiver crash between two renames is outside `Commit.tla`: the entries renamed stay in place, the rest stay staged, and the next receive refuses the taken name | rename(2), `os.Root.Rename` |
