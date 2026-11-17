@@ -178,7 +178,8 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 }
 
 // sweep removes the stages, other than this offer's, that nobody wrote to
-// for StageLife (abandoned offers'); best effort.
+// for StageLife (abandoned offers'), and finishes those of them holding
+// their intent record (a commit stopped part way); best effort.
 func (r *receiver) sweep() {
 	es, _ := fs.ReadDir(r.root.FS(), ".")
 	for _, e := range es {
@@ -197,10 +198,40 @@ func (r *receiver) sweep() {
 			}
 			return nil
 		})
-		if stale {
+		if stale && !r.finishStage(e.Name()) {
 			_ = r.root.RemoveAll(e.Name())
 		}
 	}
+}
+
+// finishStage finishes the commit of a stage holding its own intent record
+// (its name is its manifest digest's): it renames every entry the stage
+// still holds into place, never replacing, then removes the stage. It
+// reports whether the stage had its intent: such a stage is never removed
+// with entries in it (spec Commit.tla Expire, Recover); one whose names
+// are taken stays.
+func (r *receiver) finishStage(stage string) bool {
+	var in intent
+	b, err := r.root.ReadFile(path.Join(stage, intentName))
+	if err != nil || json.Unmarshal(b, &in) != nil || len(in.Manifest) != 64 || StagePrefix+in.Manifest[:16] != stage {
+		return false
+	}
+	es, err := fs.ReadDir(r.root.FS(), stage)
+	if err != nil {
+		return true
+	}
+	for _, e := range es {
+		if e.Name() == intentName {
+			continue
+		}
+		if err := rename(r.root, path.Join(stage, e.Name()), e.Name()); err != nil {
+			return true
+		}
+	}
+	if r.syncDir(r.root) == nil {
+		_ = r.root.RemoveAll(stage)
+	}
+	return true
 }
 
 func (r *receiver) close() {
@@ -381,7 +412,7 @@ func (r *receiver) verify(e Entry) error {
 // A rename that fails leaves things as they are: the next receive
 // finishes (Stop).
 // rename is os.Root.Rename (a test fails one).
-var rename = (*os.Root).Rename
+var rename = renameNoReplace
 
 func (r *receiver) commit() error {
 	if !r.finishing {
@@ -425,7 +456,9 @@ func (r *receiver) commit() error {
 		}
 	}
 	for _, top := range move {
-		if err := rename(r.root, path.Join(r.stage, top), top); err != nil {
+		if err := rename(r.root, path.Join(r.stage, top), top); errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%q exists in the receiving directory", top)
+		} else if err != nil {
 			return err
 		}
 	}

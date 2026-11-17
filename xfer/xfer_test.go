@@ -380,9 +380,9 @@ func TestFailedCommitKeepsTheStage(t *testing.T) {
 		if calls++; calls == 2 {
 			return errors.New("planted rename failure")
 		}
-		return r.Rename(old, new)
+		return renameNoReplace(r, old, new)
 	}
-	defer func() { rename = (*os.Root).Rename }()
+	defer func() { rename = renameNoReplace }()
 	_, rr := session(t, s, dst, 0)
 	if rr.a.OK {
 		t.Fatalf("receiver %+v: a failed commit answered ok", rr)
@@ -390,7 +390,7 @@ func TestFailedCommitKeepsTheStage(t *testing.T) {
 	if got := len(names(t, dst)); got != 2 { // a.txt and the stage
 		t.Fatalf("after a failed commit dst holds %q", names(t, dst))
 	}
-	rename = (*os.Root).Rename
+	rename = renameNoReplace
 	sr, rr := session(t, s, dst, 0)
 	if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent != 0 {
 		t.Fatalf("retry: sender %+v, receiver %+v (want ok, nothing resent)", sr, rr)
@@ -477,7 +477,7 @@ func TestCommitStoppedByACrashIsFinished(t *testing.T) {
 			if calls++; calls > k {
 				runtime.Goexit() // the receiver dies here
 			}
-			return r.Rename(old, new)
+			return renameNoReplace(r, old, new)
 		}
 		x, y := net.Pipe()
 		go func() { _, _, _ = s.Serve(x) }()
@@ -486,7 +486,7 @@ func TestCommitStoppedByACrashIsFinished(t *testing.T) {
 		<-done
 		_ = y.Close()
 		_ = x.Close()
-		rename = (*os.Root).Rename
+		rename = renameNoReplace
 		if got := len(names(t, dst)); got != k+1 { // k entries and the stage
 			t.Fatalf("after a crash at rename %d: dst holds %q", k+1, names(t, dst))
 		}
@@ -534,5 +534,90 @@ func TestServeReadsEachFileOnce(t *testing.T) {
 		if !e.Dir && len(e.SHA256) != 64 {
 			t.Fatalf("%s: no digest in the manifest", e.Path)
 		}
+	}
+}
+
+// threeTops offers a.txt, b/in/f and c.txt.
+func threeTops(t *testing.T) *Source {
+	base := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(base, "a.txt"), []byte("content of a"), 0o644))
+	must(t, os.MkdirAll(filepath.Join(base, "b", "in"), 0o755))
+	must(t, os.WriteFile(filepath.Join(base, "b", "in", "f"), []byte("nested"), 0o644))
+	must(t, os.WriteFile(filepath.Join(base, "c.txt"), []byte("content of c"), 0o644))
+	s, err := NewSource([]string{filepath.Join(base, "a.txt"), filepath.Join(base, "b"), filepath.Join(base, "c.txt")})
+	must(t, err)
+	return s
+}
+
+// crashAfter receives s into dst and dies after k renames of its commit.
+func crashAfter(t *testing.T, s *Source, dst string, k int) {
+	calls := 0
+	rename = func(r *os.Root, old, new string) error {
+		if calls++; calls > k {
+			runtime.Goexit()
+		}
+		return renameNoReplace(r, old, new)
+	}
+	defer func() { rename = renameNoReplace }()
+	x, y := net.Pipe()
+	go func() { _, _, _ = s.Serve(x) }()
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = Receive(y, dst, nil) }()
+	<-done
+	_ = y.Close()
+	_ = x.Close()
+}
+
+// A stale stage holding its intent record (a commit stopped part way, its
+// offer never received again) is finished by the next receive's sweep, not
+// removed with its verified entries (spec Commit.tla Expire, mutant
+// sweep-deletes-intent).
+func TestStaleStageWithIntentIsFinished(t *testing.T) {
+	dst := t.TempDir()
+	crashAfter(t, threeTops(t), dst, 1)
+	old := time.Now().Add(-StageLife - time.Hour)
+	must(t, filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.Contains(p, StagePrefix) {
+			err = os.Chtimes(p, old, old)
+		}
+		return err
+	}))
+	other := filepath.Join(t.TempDir(), "other.txt")
+	must(t, os.WriteFile(other, []byte("another offer"), 0o644))
+	s2, err := NewSource([]string{other})
+	must(t, err)
+	if sr, rr := session(t, s2, dst, 0); !rr.a.OK {
+		t.Fatalf("another offer: sender %+v, receiver %+v", sr, rr)
+	}
+	if got := names(t, dst); !slices.Equal(got, []string{"a.txt", "b", "c.txt", "other.txt"}) {
+		t.Fatalf("dst holds %q, want the stopped offer finished and its stage gone", got)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "c.txt")); err != nil || string(b) != "content of c" {
+		t.Fatalf("c.txt: %q, %v", b, err)
+	}
+}
+
+// A name that appears in the receiving directory between the commit's check
+// and its rename is kept, not replaced; the commit stops with the stage and
+// its intent kept (spec Commit.tla Rename, mutant replace).
+func TestRenameKeepsANameThatAppeared(t *testing.T) {
+	dst := t.TempDir()
+	s := threeTops(t)
+	rename = func(r *os.Root, old, new string) error {
+		if new == "c.txt" {
+			must(t, os.WriteFile(filepath.Join(dst, "c.txt"), []byte("someone else's"), 0o600))
+		}
+		return renameNoReplace(r, old, new)
+	}
+	defer func() { rename = renameNoReplace }()
+	_, rr := session(t, s, dst, 0)
+	if rr.a.OK || !strings.Contains(rr.a.Message, "exists") {
+		t.Fatalf("receiver %+v: want the commit stopped, the name existing", rr)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "c.txt")); err != nil || string(b) != "someone else's" {
+		t.Fatalf("c.txt: %q, %v: replaced", b, err)
+	}
+	if got := names(t, dst); len(got) != 4 { // a.txt, b, c.txt, the stage
+		t.Fatalf("dst holds %q, want the stage kept", got)
 	}
 }
