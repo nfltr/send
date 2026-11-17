@@ -38,8 +38,9 @@ refused. On Windows the file's mode does not reflect its ACL (every
 writable file reports 0666), so the mode is not checked there: keep the
 file in a directory only you can read, such as your user profile.
 Whoever holds the address can open sessions: the sender serves at most 16
-at once (a receiver past that is refused, exit 2) and ends a session that
-reads or writes nothing for 30 minutes.
+at once (a receiver past that is refused, exit 2). A session whose peer is
+gone ends with its connection (the relay link's and the direct path's
+liveness checks).
 
 ## Credentials
 

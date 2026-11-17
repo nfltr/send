@@ -188,7 +188,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	fmt.Fprintf(os.Stderr, "serving %d files, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, bytes)
 	fmt.Fprintln(out, ln.Address())
 	done := make(chan struct{}, 1)
-	sessions := newLimiter(maxSessions, idleLimit)
+	sessions := newLimiter(maxSessions)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -229,26 +229,17 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	}
 }
 
-// Sessions: at most maxSessions served at once (the address is a bearer
-// capability: whoever holds it can open sessions), each ended after
-// idleLimit with no byte read or written.
-// ponytail: idleLimit also bounds the receiver's read-back of one file
-// before its next frame (about 180 GB at 100 MB/s); progress frames
-// during that read if larger files must pass.
-const (
-	maxSessions = 16
-	idleLimit   = 30 * time.Minute
-)
+// maxSessions bounds the sessions served at once: the address is a bearer
+// capability, whoever holds it can open sessions. There is no idle bound: a
+// session whose peer is gone ends when its connection does (the agent
+// link's ping liveness, the direct path's QUIC idle timeout), and a live
+// peer's long pause (a receiver reading a big file back) is legitimate.
+const maxSessions = 16
 
-// limiter caps the sessions served at once and ends idle ones.
-type limiter struct {
-	slots chan struct{}
-	idle  time.Duration
-}
+// limiter caps the sessions served at once.
+type limiter struct{ slots chan struct{} }
 
-func newLimiter(n int, idle time.Duration) limiter {
-	return limiter{slots: make(chan struct{}, n), idle: idle}
-}
+func newLimiter(n int) limiter { return limiter{slots: make(chan struct{}, n)} }
 
 // take serves c with serve in a goroutine while a slot is free; with none
 // it refuses c (xfer.Refuse: the receiver exits refused) and closes it.
@@ -257,7 +248,7 @@ func (l limiter) take(c net.Conn, serve func(net.Conn)) {
 	case l.slots <- struct{}{}:
 		go func() {
 			defer func() { <-l.slots }()
-			serve(idleConn{c, l.idle})
+			serve(c)
 		}()
 	default:
 		go func() {
@@ -266,22 +257,6 @@ func (l limiter) take(c net.Conn, serve func(net.Conn)) {
 			_ = c.Close()
 		}()
 	}
-}
-
-// idleConn ends a session that reads or writes nothing for d.
-type idleConn struct {
-	net.Conn
-	d time.Duration
-}
-
-func (c idleConn) Read(p []byte) (int, error) {
-	_ = c.SetDeadline(time.Now().Add(c.d))
-	return c.Conn.Read(p)
-}
-
-func (c idleConn) Write(p []byte) (int, error) {
-	_ = c.SetDeadline(time.Now().Add(c.d))
-	return c.Conn.Write(p)
 }
 
 func receiveCmd(ctx context.Context, args []string) int {
