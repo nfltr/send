@@ -30,7 +30,21 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   nobody wrote to for 7 days is an abandoned offer's, and the next
   `receive` into that directory removes it, or, when that offer's commit
   had begun (a receiver that died while moving its entries into place),
-  finishes it. A commit never replaces a name that appears meanwhile.
+  finishes it. The next `receive` of the same offer finishes such a
+  commit too, and refuses, keeping the stage, when a name the commit had
+  moved into place no longer holds what was offered (someone deleted it
+  and made another). One `receive` of an offer into a directory at a time: a second
+  one, while the first holds the offer's hidden directory (a lock on a
+  file in it), is refused (exit 2).
+- **No name replaced.** A commit never replaces a name that appears
+  meanwhile: its renames refuse an existing name atomically, with
+  `renameat2(RENAME_NOREPLACE)` on Linux 3.15+, `renamex_np(RENAME_EXCL)`
+  on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows.
+  On a file system that refuses that flag, and on other systems, a file is
+  hard-linked into place (which refuses an existing name) and its staged
+  name removed, and a directory is not moved: the transfer is refused
+  with its files kept staged (receive it on a file system that has the
+  flag).
 
 The resume and commit rules are checked TLA+ models: [`spec/`](spec/README.md).
 
@@ -40,7 +54,8 @@ refused. On Windows the file's mode does not reflect its ACL (every
 writable file reports 0666), so the mode is not checked there: keep the
 file in a directory only you can read, such as your user profile.
 Whoever holds the address can open sessions: the sender serves at most 16
-at once (a receiver past that is refused, exit 2). A session whose peer is
+at once (a receiver past that is refused, exit 2; in a flood, sessions
+past a few refusals under way are closed outright). A session whose peer is
 gone ends with its connection (the relay link's and the direct path's
 liveness checks).
 

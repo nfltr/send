@@ -4,7 +4,6 @@
 package xfer
 
 import (
-	"io/fs"
 	"os"
 	"path"
 )
@@ -42,21 +41,19 @@ func renameAt(root *os.Root, old, new string, prim func(od, nd *os.File, ob, nb 
 
 // linkRename is the fallback where no primitive exists or a file system
 // refuses it: a file is linked (link fails on an existing name) and its
-// old name removed; a directory is renamed after a check, which is not
-// atomic against a name that appears between the two.
+// old name removed; a directory cannot be linked, and a check then rename
+// would not be atomic against a name that appears between the two, so its
+// rename is refused (ErrNoAtomicRename).
 func linkRename(root *os.Root, old, new string) error {
 	fi, err := root.Lstat(old)
 	if err != nil {
 		return err
 	}
-	if !fi.IsDir() {
-		if err := root.Link(old, new); err != nil {
-			return err
-		}
-		return root.Remove(old)
+	if fi.IsDir() {
+		return &os.LinkError{Op: "rename", Old: old, New: new, Err: ErrNoAtomicRename}
 	}
-	if _, err := root.Lstat(new); err == nil {
-		return &os.LinkError{Op: "rename", Old: old, New: new, Err: fs.ErrExist}
+	if err := root.Link(old, new); err != nil {
+		return err
 	}
-	return root.Rename(old, new)
+	return root.Remove(old)
 }

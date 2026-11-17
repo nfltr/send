@@ -621,3 +621,144 @@ func TestRenameKeepsANameThatAppeared(t *testing.T) {
 		t.Fatalf("dst holds %q, want the stage kept", got)
 	}
 }
+
+// A second receive of an offer another receive is taking into the same
+// directory refuses, busy, naming the stage, and changes nothing; once the
+// first is cut, the next receive resumes from its stage (review 2026-11-17
+// #2, finding A; spec Commit.tla Open, mutant no-lock).
+func TestConcurrentReceiveOfAnOfferIsBusy(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	x, y, resume, first := pausedReceive(t, s, dst)
+
+	sr, rr := session(t, s, dst, 0)
+	var busy *StageBusyError
+	if !errors.Is(rr.err, ErrRefused) || !errors.As(rr.err, &busy) || !strings.HasPrefix(busy.Stage, StagePrefix) || !strings.Contains(rr.a.Message, busy.Stage) {
+		t.Fatalf("second receive: sender %+v, receiver %+v; want refused, busy naming the stage", sr, rr)
+	}
+	if got := names(t, dst); len(got) != 1 || !strings.HasPrefix(got[0], StagePrefix) {
+		t.Fatalf("dst holds %q, want only the first receive's stage", got)
+	}
+
+	_ = x.Close() // the first receive is cut
+	_ = y.Close()
+	close(resume)
+	if err := <-first; err == nil {
+		t.Fatal("the cut receive ended without an error")
+	}
+	sr, rr = session(t, s, dst, 0)
+	if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent >= 1<<20 {
+		t.Fatalf("after the cut: sender %+v, receiver %+v; want ok, resumed", sr, rr)
+	}
+	if digest(t, filepath.Join(dst, "data")) != digest(t, src) {
+		t.Fatal("received tree differs")
+	}
+}
+
+// pausedReceive starts a receive of s into dst and returns once it holds
+// the stage, part way through its first file; closing resume lets it go on,
+// and first gets its error.
+func pausedReceive(t *testing.T, s *Source, dst string) (x, y net.Conn, resume chan struct{}, first chan error) {
+	x, y = net.Pipe()
+	go func() { _, _, _ = s.Serve(x) }()
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	first = make(chan error, 1)
+	go func() {
+		_, err := Receive(y, dst, func(int64) { once.Do(func() { close(paused); <-resume }) })
+		first <- err
+	}()
+	<-paused
+	t.Cleanup(func() { _ = x.Close(); _ = y.Close() })
+	return x, y, resume, first
+}
+
+// The sweep of another offer's receive skips a stale stage whose lock a
+// receive holds (spec Commit.tla Expire).
+func TestSweepSkipsAHeldStage(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	_, _, resume, first := pausedReceive(t, s, dst)
+	old := time.Now().Add(-StageLife - time.Hour)
+	must(t, filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && p != dst {
+			err = os.Chtimes(p, old, old)
+		}
+		return err
+	}))
+	other := filepath.Join(t.TempDir(), "other.txt")
+	must(t, os.WriteFile(other, []byte("another offer"), 0o644))
+	s2, err := NewSource([]string{other})
+	must(t, err)
+	if sr, rr := session(t, s2, dst, 0); !rr.a.OK {
+		t.Fatalf("another offer: sender %+v, receiver %+v", sr, rr)
+	}
+	close(resume)
+	if err := <-first; err != nil {
+		t.Fatalf("the held receive, after another's sweep: %v", err)
+	}
+	if digest(t, filepath.Join(dst, "data")) != digest(t, src) {
+		t.Fatal("received tree differs")
+	}
+}
+
+// Recovery takes an entry the stage no longer holds as moved only when what
+// the directory holds there has the manifest's content: one deleted and
+// made again by someone else between the crash and the recovery refuses
+// the commit and stays (review 2026-11-17 #2, finding B; spec Commit.tla
+// Rename, mutant trust-moved).
+func TestRecoveryRefusesAReplacedEntry(t *testing.T) {
+	for _, tc := range []struct{ name, path, body string }{
+		{"file", "a.txt", "content of A"},               // same size, other bytes
+		{"dir", filepath.Join("b", "in", "f"), "other"}, // a file under a moved directory
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := t.TempDir()
+			s := threeTops(t)
+			crashAfter(t, s, dst, 2) // a.txt and b moved, c.txt staged
+			must(t, os.RemoveAll(filepath.Join(dst, strings.Split(filepath.ToSlash(tc.path), "/")[0])))
+			must(t, os.MkdirAll(filepath.Dir(filepath.Join(dst, tc.path)), 0o755))
+			must(t, os.WriteFile(filepath.Join(dst, tc.path), []byte(tc.body), 0o600))
+			_, rr := session(t, s, dst, 0)
+			if rr.a.OK || !strings.Contains(rr.a.Message, ErrNotOurs.Error()) {
+				t.Fatalf("receiver %+v: want the recovery refused, the entry not ours", rr)
+			}
+			if b, err := os.ReadFile(filepath.Join(dst, tc.path)); err != nil || string(b) != tc.body {
+				t.Fatalf("%s: %q, %v: the foreign entry changed", tc.path, b, err)
+			}
+			if got := names(t, dst); len(got) != 3 { // a.txt, b, the stage (c.txt in it)
+				t.Fatalf("dst holds %q, want the stage kept, c.txt not moved", got)
+			}
+		})
+	}
+}
+
+// Where no rename can refuse an existing name atomically, a file is linked
+// (link refuses one) and a directory is not renamed: its commit refuses
+// (review 2026-11-17 #2, finding D).
+func TestLinkRenameRefusesDirectories(t *testing.T) {
+	d := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(d, "s", "dir"), 0o755))
+	must(t, os.WriteFile(filepath.Join(d, "s", "f"), []byte("f"), 0o600))
+	must(t, os.WriteFile(filepath.Join(d, "g"), []byte("g"), 0o600))
+	root, err := os.OpenRoot(d)
+	must(t, err)
+	defer root.Close() //nolint:errcheck
+	if err := linkRename(root, "s/dir", "dir"); !errors.Is(err, ErrNoAtomicRename) {
+		t.Fatalf("directory: %v, want ErrNoAtomicRename", err)
+	}
+	if _, err := os.Stat(filepath.Join(d, "s", "dir")); err != nil {
+		t.Fatalf("the refused directory moved: %v", err)
+	}
+	if err := linkRename(root, "s/f", "g"); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("file onto an existing name: %v, want ErrExist", err)
+	}
+	must(t, linkRename(root, "s/f", "f"))
+	if b, err := os.ReadFile(filepath.Join(d, "f")); err != nil || string(b) != "f" {
+		t.Fatalf("f: %q, %v", b, err)
+	}
+}

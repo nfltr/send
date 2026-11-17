@@ -236,10 +236,18 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 // peer's long pause (a receiver reading a big file back) is legitimate.
 const maxSessions = 16
 
-// limiter caps the sessions served at once.
-type limiter struct{ slots chan struct{} }
+// maxRefusing bounds the sessions refused with a reason at once.
+const maxRefusing = 4
 
-func newLimiter(n int) limiter { return limiter{slots: make(chan struct{}, n)} }
+// limiter caps the sessions served at once, and the refusals: past the
+// cap a session is refused with a reason while fewer than maxRefusing
+// refusals are under way, else closed outright, so a flood costs a bounded
+// number of goroutines.
+type limiter struct{ slots, refusing chan struct{} }
+
+func newLimiter(n int) limiter {
+	return limiter{slots: make(chan struct{}, n), refusing: make(chan struct{}, maxRefusing)}
+}
 
 // take serves c with serve in a goroutine while a slot is free; with none
 // it refuses c (xfer.Refuse: the receiver exits refused) and closes it.
@@ -250,12 +258,19 @@ func (l limiter) take(c net.Conn, serve func(net.Conn)) {
 			defer func() { <-l.slots }()
 			serve(c)
 		}()
+		return
 	default:
+	}
+	select {
+	case l.refusing <- struct{}{}:
 		go func() {
+			defer func() { <-l.refusing }()
 			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 			_ = xfer.Refuse(c, fmt.Sprintf("sender busy: %d sessions already; try again later", cap(l.slots)))
 			_ = c.Close()
 		}()
+	default:
+		_ = c.Close()
 	}
 }
 

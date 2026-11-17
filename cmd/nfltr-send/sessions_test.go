@@ -5,9 +5,11 @@ package main
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +66,30 @@ func TestSessionsAreCappedAndEndWithTheirPeer(t *testing.T) {
 	l.take(x, serveOne)
 	if a, err := xfer.Receive(y, t.TempDir(), nil); err != nil || !a.OK {
 		t.Fatalf("after the vanished session ended: %+v, %v", a, err)
+	}
+}
+
+// A flood of sessions past the cap costs a bounded number of goroutines:
+// a few are refused with a reason, the rest closed outright (review
+// 2026-11-17 #2, finding C).
+func TestRefusalsPastTheCapAreBounded(t *testing.T) {
+	l := newLimiter(1)
+	hold := make(chan struct{})
+	defer close(hold)
+	a, _ := net.Pipe()
+	l.take(a, func(net.Conn) { <-hold })
+	base := runtime.NumGoroutine()
+	var peers []net.Conn
+	for range 200 { // peers that never read: a refusal waits out its deadline
+		x, y := net.Pipe()
+		peers = append(peers, y)
+		l.take(x, func(net.Conn) { t.Error("served past the cap") })
+	}
+	if n := runtime.NumGoroutine() - base; n > maxRefusing+5 {
+		t.Fatalf("%d goroutines for 200 refused sessions", n)
+	}
+	_ = peers[len(peers)-1].SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := peers[len(peers)-1].Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("a session past the refusal cap: %v, want closed", err)
 	}
 }
