@@ -338,7 +338,7 @@ func (r *receiver) verify(e Entry, want string) error {
 
 // commit makes the directories, gives files their mtimes, and moves every
 // top-level name into place, each only while dir still does not hold it;
-// then syncs dir and removes the stage.
+// syncs the offer's directories, then dir, and removes the stage.
 // rename is os.Root.Rename (a test fails one).
 var rename = (*os.Root).Rename
 
@@ -355,6 +355,9 @@ func (r *receiver) commit() error {
 			return err
 		}
 	}
+	if err := r.syncDirs(); err != nil {
+		return err
+	}
 	if top := r.taken(); top != "" {
 		return fmt.Errorf("%q exists in the receiving directory", top)
 	}
@@ -368,8 +371,6 @@ func (r *receiver) commit() error {
 			return err
 		}
 	}
-	// ponytail: the receiving directory is synced, not the stage's nested
-	// directories; a power loss can still lose a nested entry's name.
 	// Windows has no directory sync (FlushFileBuffers on a directory is
 	// refused); NTFS journals the renames.
 	if runtime.GOOS != "windows" {
@@ -382,6 +383,40 @@ func (r *receiver) commit() error {
 		}
 	}
 	return r.root.RemoveAll(r.stage)
+}
+
+// syncDirs puts the offer's directories' entries on stable storage,
+// deepest first, before the renames (review 2026-11-17, F5); not on
+// Windows (see commit).
+func (r *receiver) syncDirs() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	var dirs []string
+	seen := map[string]bool{}
+	for _, e := range r.m.Entries {
+		d := path.Dir(e.Path)
+		if e.Dir {
+			d = e.Path
+		}
+		if d != "." && !seen[d] {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	slices.SortFunc(dirs, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	for _, d := range dirs {
+		f, err := r.sr.Open(d)
+		if err != nil {
+			return err
+		}
+		err = f.Sync()
+		_ = f.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func countFiles(m Manifest) int {
