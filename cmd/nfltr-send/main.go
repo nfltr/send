@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,7 +49,9 @@ with no account: direct paths only, and a receiver with no direct path to
 the sender exits 12.
 
 receive reads the address from --address-file (default -, stdin; never
-from the command line, where every user of the machine sees it) and writes
+from the command line, where every user of the machine sees it; a file
+others may read is refused, except on Windows, where the file is as
+private as its directory's ACL) and writes
 the files into --to (default .). A name that already exists there refuses
 the transfer. Nothing lands until every file's SHA-256 over what is on
 disk equals the sender's; a cut transfer is resumed, by itself and by the
@@ -348,7 +351,10 @@ func readAddress(name string) (string, error) {
 	if name == "-" {
 		b, err = io.ReadAll(io.LimitReader(os.Stdin, 4096))
 	} else {
-		if fi, serr := os.Stat(name); serr == nil && fi.Mode().Perm()&0o077 != 0 {
+		// Windows reports every writable file as 0666 whatever its ACL
+		// says: there the file is as private as its directory's ACL, and
+		// the mode is not checked (as machinecert.LoadKey).
+		if fi, serr := os.Stat(name); serr == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
 			return "", fmt.Errorf("%s: readable by others (chmod 600 it): an address is a secret", name)
 		}
 		b, err = os.ReadFile(name) // #nosec G304 -- the file the user named

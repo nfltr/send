@@ -28,7 +28,13 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   nobody wrote to for 7 days is an abandoned offer's, and the next
   `receive` into that directory removes it.
 
-The resume rules are a checked TLA+ model: [`spec/`](spec/README.md).
+The resume and commit rules are checked TLA+ models: [`spec/`](spec/README.md).
+
+The address is a secret. `receive` reads it from `--address-file` (default
+stdin), never from the command line; a file group or others may read is
+refused. On Windows the file's mode does not reflect its ACL (every
+writable file reports 0666), so the mode is not checked there: keep the
+file in a directory only you can read, such as your user profile.
 
 ## Credentials
 
