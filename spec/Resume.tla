@@ -102,11 +102,12 @@ Crash ==
     /\ sess' = "none" /\ faults' = faults + 1
     /\ UNCHANGED <<src, committed, resumed>>
 
-\* Rot: a chunk the receiver wrote in this session is not what it was
-\* sent (a write at a wrong offset, a torn write, a bad disk): only the
-\* final digest, over what is on disk, sees it.
+\* Rot: a chunk on the receiver's disk is not what it was sent (a write
+\* at a wrong offset, a torn write, a bad disk, another program), at any
+\* time before the commit: in a session only the final digest, over what
+\* is on disk, sees it; between sessions the next one's prefix check.
 Rot ==
-    /\ sess = "open" /\ Len(part) > 0 /\ faults < MaxFaults
+    /\ committed = <<>> /\ Len(part) > 0 /\ faults < MaxFaults
     /\ \E i \in 1..Len(part), v \in Vals : v # part[i] /\ part' = [part EXCEPT ![i] = v]
     /\ faults' = faults + 1
     /\ UNCHANGED <<src, sess, committed, resumed>>

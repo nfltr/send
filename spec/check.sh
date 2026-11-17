@@ -31,7 +31,7 @@ for c in WitnessPartWay WitnessRecoveredAfterCrash WitnessOtherFinished WitnessB
 	tlc Commit "Commit$c"
 	if grep -q "Invariant $c is violated" "$tmp/Commit$c.out"; then echo "ok   Commit $c violated (reachable)"; else echo "FAIL Commit $c not violated"; fail=1; fi
 done
-for m in drop-stage no-intent trust-foreign replace sweep-deletes-intent no-lock trust-moved; do
+for m in drop-stage no-intent trust-foreign replace sweep-deletes-intent no-lock trust-moved sweep-trust-moved; do
 	tlc Commit "Commit-mutant-$m"
 	if v=$(grep -E -o '(Invariant|Action property) [A-Za-z]+ (of the PROPERTIES )?is violated|Temporal propert(y [A-Za-z]+ was|ies were) violated' "$tmp/Commit-mutant-$m.out"); then echo "ok   Commit mutant $m caught ($v)"; else echo "FAIL Commit mutant $m not caught"; fail=1; fi
 done

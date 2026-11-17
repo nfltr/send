@@ -2,8 +2,9 @@
 
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
-of what it wrote, writes that land wrong, and a sender restarted with
-another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
+of what it wrote, a chunk on its disk that is not what was sent (a write
+that landed wrong, a bad disk, another program; in a session or between
+sessions), and a sender restarted with another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
 with `-coverage 1`, each witness (must be violated) and each mutant (must
 be caught). N = 3 chunks, two chunk values, two faults: 608 states.
 
@@ -23,7 +24,10 @@ directory refuses the offer, also one that appears during the renames: a
 rename never replaces. A stale stage (nobody wrote to it for StageLife)
 is removed by another receive's sweep only when its lock is free and it
 holds no intent record of its own; one with its intent is finished by
-that sweep. `spec/check.sh` checks it the same way. N = 2 entries, P = 2
+that sweep exactly as a recovery would finish it (the intent record carries
+the manifest, so the sweep compares moved entries too). A file whose
+digest over what landed is not the manifest's refuses the transfer, and its
+stage is removed under the lock (Refuse). `spec/check.sh` checks it the same way. N = 2 entries, P = 2
 receivers, two faults: 1250 states.
 
 | invariant / property | meaning |
@@ -69,12 +73,13 @@ receivers, two faults: 1250 states.
 | mutant | the failure it plants | caught by |
 |---|---|---|
 | `drop-stage` | a commit that stops part way removes the stage (review 2026-11-17, finding 1) | `Kept` |
-| `no-intent` | roll forward without an intent record: names in the directory taken as moved | `AllOrNone` |
+| `no-intent` | roll forward without an intent record: names in the directory taken as moved | `Intact` (and `AllOrNone`) |
 | `trust-foreign` | an intent record that is not this offer's (torn, or another offer's) trusted | `Committed` |
 | `replace` | a rename that replaces a name that appeared after the check | `NoReplace` |
 | `sweep-deletes-intent` | the stale sweep removes a stage holding its intent (review 2026-11-17) | `Kept` |
-| `no-lock` | receivers open the stage without its lock: one rewrites what another verified and commits (review 2026-11-17 #2, finding A) | `Kept` (and `Intact`) |
+| `no-lock` | receivers open the stage without its lock: one rewrites what another verified and commits (review 2026-11-17 #2, finding A); deadlock checking off (a refusal under it leaves the other receiver stuck, found first otherwise) | `Kept` (and `Intact`) |
 | `trust-moved` | recovery takes any name the stage no longer holds as moved, without comparing it with the manifest (review 2026-11-17 #2, finding B) | `Committed` |
+| `sweep-trust-moved` | the sweep (receiver P) finishes a stale stage with its intent without that comparison: the intent held only the digest (lane SENDTRACE) | `Committed` |
 
 ## Environment assumptions
 
