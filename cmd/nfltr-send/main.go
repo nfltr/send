@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nfltr/relay/client/agent"
 	"github.com/nfltr/relay/client/nf1"
 	"github.com/nfltr/relay/client/nfnet"
 	"github.com/nfltr/relay/client/relaytrust"
@@ -39,9 +40,12 @@ Usage:
 
 send prints an address (nf1...) and serves the files under it until it is
 stopped (--once: until the first complete transfer). The address is a
-secret: whoever holds it can receive. Serving needs this machine's nfltr
-machine certificate: the one ` + "`nfltr config login`" + ` left beside the nfltr
-config file (renewed while serving), or --machine-credential.
+secret: whoever holds it can receive. With this machine's nfltr machine
+certificate (the one ` + "`nfltr config login`" + ` left beside the nfltr config
+file, renewed while serving, or --machine-credential) the relay carries a
+transfer whose direct path does not form. With none the address is served
+with no account: direct paths only, and a receiver with no direct path to
+the sender exits 12.
 
 receive reads the address from --address-file (default -, stdin; never
 from the command line, where every user of the machine sees it) and writes
@@ -50,7 +54,9 @@ the transfer. Nothing lands until every file's SHA-256 over what is on
 disk equals the sender's; a cut transfer is resumed, by itself and by the
 next receive of the same address, from what already arrived.
 
-Exit status: 0 done, 1 usage, 2 refused by the other side, 3 failed.
+Exit status: 0 done, 1 usage, 2 refused by the other side, 3 failed,
+12 no direct path to a sender serving with no account (relaying needs the
+sender's account).
 
 Flags:
 `
@@ -87,14 +93,14 @@ func addCommon(fs *flag.FlagSet) common {
 		relay:     fs.String("relay", env("NFLTR_SEND_RELAY", "grpc.nfltr.xyz:443"), "relay agent-link `address` (send); $NFLTR_SEND_RELAY"),
 		relayHTTP: fs.String("relay-http", "", "relay HTTP `address` the address names; default: --relay without its grpc. prefix and port 443"),
 		pin:       fs.String("relay-pin", os.Getenv(relaytrust.PinEnv), "accept the relay certificate with this SHA-256 `fingerprint` (a private relay's); $"+relaytrust.PinEnv),
-		direct:    fs.String("direct", "on", "direct paths: `mode` on, public (no LAN addresses) or off (relayed only)"),
+		direct:    fs.String("direct", "on", "direct paths: `mode` on (LAN first, then the lowest round trip) or off (relayed only)"),
 	}
 }
 
 func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
-	mode, ok := map[string]nfnet.DirectMode{"on": nfnet.DirectOn, "public": nfnet.DirectPublic, "off": nfnet.DirectOff}[*c.direct]
-	if !ok {
-		return nfnet.Config{}, nfnet.DirectOff, fmt.Errorf("--direct %q: want on, public or off", *c.direct)
+	mode, err := agent.ParseDirectMode(*c.direct)
+	if err != nil {
+		return nfnet.Config{}, nfnet.DirectOff, fmt.Errorf("--direct: %w", err)
 	}
 	if *c.pin != "" {
 		if _, err := relaytrust.ParsePin(*c.pin); err != nil {
@@ -131,18 +137,37 @@ func sendCmd(ctx context.Context, args []string) int {
 		return fail(1, err)
 	}
 	m, err := loadMachine(machinePath(*machineFile))
-	if err == nil {
-		err = m.forRelay(cfg.AgentRelay)
-	}
-	if err != nil {
+	switch {
+	case *machineFile == "" && errors.Is(err, errNoMachine): // serve with no account
+		if mode == nfnet.DirectOff {
+			return fail(1, errors.New("--direct off: with no machine certificate the address is served with no account, on direct paths only; run `nfltr config login` for the relay to carry it"))
+		}
+		m = nil
+		fmt.Fprintln(os.Stderr, "no machine certificate: serving with no account, on direct paths only (a receiver with no direct path exits 12; after `nfltr config login` the relay carries those)")
+	case err == nil:
+		if err = m.forRelay(cfg.AgentRelay); err != nil {
+			return fail(1, err)
+		}
+	default:
 		return fail(1, err)
 	}
-	cfg.ClientCert = m.cert
+	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	return serve(ctx, cfg, mode, m, src, *once, os.Stdout)
+}
+
+// serve serves src under a fresh address until ctx ends (once: until the
+// first complete transfer), writing the address to out. With m nil the
+// address is served with no account (cfg holds no credential): direct
+// paths only.
+func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *machine, src *xfer.Source, once bool, out io.Writer) int {
+	anon := m == nil
+	if !anon {
+		cfg.ClientCert = m.cert
+		go m.run(ctx, cfg.Logger)
+	}
 	var id [4]byte
 	_, _ = rand.Read(id[:])
 	cfg.Agent = "send-" + hex.EncodeToString(id[:])
-	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	go m.run(ctx, cfg.Logger)
 	l, _, err := nf1.Mint(cfg.Relay)
 	if err == nil && mode != nfnet.DirectOff {
 		l, err = l.WithDirect()
@@ -152,12 +177,12 @@ func sendCmd(ctx context.Context, args []string) int {
 	}
 	ln, err := nfnet.Listen(ctx, cfg, "send", nfnet.ListenOptions{Address: l, Direct: mode})
 	if err != nil {
-		return fail(3, enrolHint(err))
+		return fail(3, enrolHint(err, anon))
 	}
 	defer ln.Close() //nolint:errcheck
 	files, bytes := src.Files()
 	fmt.Fprintf(os.Stderr, "serving %d files, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, bytes)
-	fmt.Println(ln.Address())
+	fmt.Fprintln(out, ln.Address())
 	done := make(chan struct{}, 1)
 	go func() {
 		<-ctx.Done()
@@ -174,13 +199,15 @@ func sendCmd(ctx context.Context, args []string) int {
 				return 0
 			default:
 			}
-			return fail(3, enrolHint(err))
+			return fail(3, enrolHint(err, anon))
 		}
 		go func() {
 			defer c.Close() //nolint:errcheck
 			t0 := time.Now()
 			a, sent, err := src.Serve(c)
 			switch {
+			case err != nil && anon && nfnet.CodeOf(err) == nfnet.CodeDirectRequired:
+				slog.Warn("transfer ended: no direct path to the receiver; relaying it needs this machine's account (`nfltr config login`)", "sent", sent, "err", err)
 			case err != nil:
 				slog.Warn("transfer ended", "sent", sent, "err", err)
 			case !a.OK:
@@ -188,7 +215,7 @@ func sendCmd(ctx context.Context, args []string) int {
 			default:
 				slog.Info("transfer done", "files", a.Files, "bytes", a.Bytes, "sent", sent, "seconds", time.Since(t0).Seconds())
 				fmt.Fprintf(os.Stderr, "sent %d files, %d bytes (%d this session) in %.1f s\n", a.Files, a.Bytes, sent, time.Since(t0).Seconds())
-				if *once {
+				if once {
 					done <- struct{}{}
 					_ = ln.Close()
 				}
@@ -224,6 +251,11 @@ func receiveCmd(ctx context.Context, args []string) int {
 		return fail(1, err)
 	}
 	cfg.Relay = t.Address.Relay // --relay-pin verifies the address's relay
+	return receive(ctx, cfg, t, mode, *to, *tries, *asJSON)
+}
+
+// receive receives the offer at t into dir, resuming up to tries sessions.
+func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) int {
 	var mu sync.Mutex
 	path, paths := "relayed", []string{}
 	cfg.Events = func(e nfnet.Event) {
@@ -250,13 +282,13 @@ func receiveCmd(ctx context.Context, args []string) int {
 	}
 	for try := 1; ; try++ {
 		base = written
-		a, err := receiveOnce(ctx, d, t, mode, *to, progress)
+		a, err := receiveOnce(ctx, d, t, mode, dir, progress)
 		switch {
 		case err == nil && a.OK:
 			el := time.Since(t0).Seconds()
 			mu.Lock()
 			fmt.Fprintf(os.Stderr, "received %d files, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, a.Bytes, el, float64(a.Bytes)/1e6/el, path)
-			if *asJSON {
+			if asJSON {
 				b, _ := json.Marshal(map[string]any{"files": a.Files, "bytes": a.Bytes, "written": written, "seconds": el,
 					"first_byte_s": first.Seconds(), "sessions": try, "paths": paths})
 				fmt.Fprintln(os.Stderr, string(b))
@@ -267,7 +299,11 @@ func receiveCmd(ctx context.Context, args []string) int {
 			return fail(2, fmt.Errorf("refused: %s", firstOf(a.Message, fmt.Sprint(err))))
 		case ctx.Err() != nil:
 			return fail(3, fmt.Errorf("stopped; receive the same address again to resume (%w)", err))
-		case try >= *tries || errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError)):
+		case nfnet.CodeOf(err) == nfnet.CodeDirectRequired && errors.As(err, new(openError)):
+			// a session that opened and lost its direct path resumes; one
+			// that found none ends here
+			return fail(12, fmt.Errorf("%w; the sender serves with no account, so relaying needs its nfltr account (the sender runs `nfltr config login`); receive the same address again to resume", err))
+		case try >= tries || errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError)):
 			return fail(3, fmt.Errorf("%w; receive the same address again to resume", err))
 		}
 		fmt.Fprintf(os.Stderr, "session %d ended (%v); resuming\n", try, err)
@@ -278,12 +314,27 @@ func receiveCmd(ctx context.Context, args []string) int {
 	}
 }
 
+// openError is a session that did not open.
+type openError struct{ error }
+
+func (e openError) Unwrap() error { return e.error }
+
+// openBound bounds a session's open: with direct paths past the SDK's
+// direct-path bound (about 55 s), within which an address served with no
+// account either forms its direct path or fails CodeDirectRequired.
+func openBound(mode nfnet.DirectMode) time.Duration {
+	if mode == nfnet.DirectOff {
+		return 30 * time.Second
+	}
+	return 60 * time.Second
+}
+
 func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, dir string, progress xfer.Progress) (xfer.Answer, error) {
-	open, cancel := context.WithTimeout(ctx, 30*time.Second)
+	open, cancel := context.WithTimeout(ctx, openBound(mode))
 	c, err := d.DialTarget(open, t, nfnet.DialOptions{Direct: mode})
 	cancel()
 	if err != nil {
-		return xfer.Answer{}, err
+		return xfer.Answer{}, openError{err}
 	}
 	defer c.Close() //nolint:errcheck
 	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
@@ -305,9 +356,14 @@ func readAddress(name string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-// enrolHint says what to do when the relay refused the certificate.
-func enrolHint(err error) error {
-	if nfnet.CodeOf(err) == nfnet.CodeAuth {
+// enrolHint says what to do when the relay refused the certificate, or
+// (anon) an address served with no account.
+func enrolHint(err error, anon bool) error {
+	code := nfnet.CodeOf(err)
+	switch {
+	case anon && code != nfnet.CodeUnreachable: // the relay answered: it refused (relay client v0.22.3 types a registration refused PermissionDenied as reset)
+		return fmt.Errorf("%w; this relay serves no address without an account: run `nfltr config login` to serve with this machine's certificate", err)
+	case code == nfnet.CodeAuth:
 		return fmt.Errorf("%w; run `nfltr config login` to enrol this machine again", err)
 	}
 	return err

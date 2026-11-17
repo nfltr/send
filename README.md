@@ -32,16 +32,30 @@ The resume rules are a checked TLA+ model: [`spec/`](spec/README.md).
 
 ## Credentials
 
-Receiving needs none. Serving an address registers it with the relay, so
-the sending machine presents its nfltr machine certificate: by default the
-one `nfltr config login` saved beside the nfltr config file
-(`machine.json` and `machine.key` next to `$NFLTR_CONFIG`, else
-`~/.config/nfltr/`), or the `machine.json` that `--machine-credential`
-names (its `machine.key` beside it, readable by its owner only). The
-sender renews the certificate while it serves and writes each renewal back
-to `machine.json`. A machine without one is told to run
-`nfltr config login`; a certificate the relay refused (revoked, expired)
-ends the sender with the same advice.
+Receiving needs none. Sending needs none either, while the bytes can go
+peer to peer:
+
+- **With this machine's nfltr certificate** the sender registers its
+  address under its account, and the relay carries a transfer whose
+  direct path does not form. The certificate is the one
+  `nfltr config login` saved beside the nfltr config file (`machine.json`
+  and `machine.key` next to `$NFLTR_CONFIG`, else `~/.config/nfltr/`), or
+  the `machine.json` that `--machine-credential` names (its `machine.key`
+  beside it, readable by its owner only). The sender renews it while it
+  serves and writes each renewal back to `machine.json`; a certificate
+  the relay refused (revoked, expired) ends the sender with advice to run
+  `nfltr config login`.
+- **With none** the address is served with no account: on direct paths
+  only. The relay carries the session's signalling (its TLS handshake and
+  the direct path's candidates, inside that TLS) and no byte of the files;
+  it learns that the address has no account behind it and the two
+  machines' network addresses, never the address's secret. A receiver
+  whose direct path does not form exits 12 (`direct_required`): relaying
+  needs the sender's account. A direct path lost mid-transfer ends that
+  session; the next one resumes, or exits 12 if no path forms again.
+  `--direct off` with no certificate is refused. A relay that takes no
+  address served without an account (setting `nf1.anon.enabled`, off by
+  default) refuses the sender (exit 3).
 
 ## Install
 

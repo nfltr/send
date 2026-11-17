@@ -86,7 +86,9 @@ func TestMachinePathDefaultsToNfltrConfig(t *testing.T) {
 }
 
 // No machine certificate: a typed error naming `nfltr config login`,
-// whatever API key the environment holds (there is no API key path).
+// whatever API key the environment holds (there is no API key path); send
+// then serves with no account (here at no relay: exit 3), unless the
+// missing certificate is one --machine-credential named (exit 1).
 func TestNoMachineCredential(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NFLTR_CONFIG", filepath.Join(dir, "nfltr.json"))
@@ -102,8 +104,11 @@ func TestNoMachineCredential(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if code := sendCmd(ctx, []string{f}); code != 1 {
-		t.Fatalf("send without a machine certificate exited %d, want 1", code)
+	if code := sendCmd(ctx, []string{f}); code != 3 {
+		t.Fatalf("send without a machine certificate, at no relay, exited %d, want 3", code)
+	}
+	if code := sendCmd(ctx, []string{"--machine-credential", filepath.Join(dir, "machine.json"), f}); code != 1 {
+		t.Fatalf("send --machine-credential <missing> exited %d, want 1", code)
 	}
 	if code := sendCmd(ctx, []string{"--api-key-file", f, f}); code != 1 {
 		t.Fatalf("send --api-key-file exited %d, want 1 (no such flag)", code)
