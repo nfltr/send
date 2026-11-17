@@ -762,3 +762,35 @@ func TestLinkRenameRefusesDirectories(t *testing.T) {
 		t.Fatalf("f: %q, %v", b, err)
 	}
 }
+
+// The sweep that finishes a stale stage holding its intent compares an
+// entry the stopped commit moved with the manifest, as recovery does: one
+// replaced by someone else refuses the finish, and the stage stays with
+// what it still holds (lane SENDTRACE; spec Commit.tla Rename, mutant
+// sweep-trust-moved).
+func TestSweepRefusesAReplacedEntry(t *testing.T) {
+	dst := t.TempDir()
+	crashAfter(t, threeTops(t), dst, 2) // a.txt and b moved, c.txt staged
+	must(t, os.WriteFile(filepath.Join(dst, "a.txt"), []byte("content of A"), 0o600))
+	old := time.Now().Add(-StageLife - time.Hour)
+	must(t, filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.Contains(p, StagePrefix) {
+			err = os.Chtimes(p, old, old)
+		}
+		return err
+	}))
+	other := filepath.Join(t.TempDir(), "other.txt")
+	must(t, os.WriteFile(other, []byte("another offer"), 0o644))
+	s2, err := NewSource([]string{other})
+	must(t, err)
+	if sr, rr := session(t, s2, dst, 0); !rr.a.OK {
+		t.Fatalf("another offer: sender %+v, receiver %+v", sr, rr)
+	}
+	got := names(t, dst)
+	if len(got) != 4 || slices.Contains(got, "c.txt") { // a.txt, b, other.txt, the stage (c.txt in it)
+		t.Fatalf("dst holds %q, want the stage kept, c.txt not moved", got)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "a.txt")); err != nil || string(b) != "content of A" {
+		t.Fatalf("a.txt: %q, %v: the foreign entry changed", b, err)
+	}
+}

@@ -92,9 +92,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 		return a, err
 	}
 	if !a.OK && !a.keep { // refused: not resumed, so nothing of it stays
-		_ = r.sr.Close()
-		_ = removeStage(r.root, r.stage, r.lk)
-		r.lk = nil
+		r.drop()
 	}
 	if err := c.writeJSON(frameAnswer, a); err != nil {
 		return a, err
@@ -104,6 +102,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 
 type receiver struct {
 	m         Manifest
+	raw       []byte   // the manifest as the sender sent it
 	sum       string   // the manifest's SHA-256
 	root      *os.Root // dir
 	stage     string   // its name in dir
@@ -111,15 +110,19 @@ type receiver struct {
 	lk        *os.File // the stage's lock, held until the receive ends
 	tops      []string
 	finishing bool // the stage holds this offer's intent: its commit stopped part way
+	tr        recvTrace
 }
 
 // intentName is the intent record's name in the stage: the offer's
-// manifest digest, written and synced before a commit's first rename
-// (spec Commit.tla Begin). Entries never start with StagePrefix.
+// manifest digest and the manifest itself, written and synced before a
+// commit's first rename (spec Commit.tla Begin), so whoever finishes the
+// commit can compare what is in place with it. Entries never start with
+// StagePrefix.
 const intentName = StagePrefix + "intent"
 
 type intent struct {
 	Manifest string `json:"manifest"`
+	Offer    []byte `json:"offer"` // the manifest's bytes (base64 in JSON: exact)
 }
 
 // newReceiver checks the manifest (relative names inside dir, files and
@@ -128,29 +131,13 @@ type intent struct {
 // lock (spec Commit.tla Open): another receive holding it refuses this one
 // (StageBusyError).
 func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
-	if m.Version != Version {
-		return nil, fmt.Errorf("protocol version %d, this nfltr-send speaks %d: update both ends", m.Version, Version)
+	if traceOn {
+		defer traceAtomic()()
 	}
-	r := &receiver{m: m}
-	seen := map[string]bool{}
-	for _, e := range m.Entries {
-		name := path.Clean(e.Path)
-		if name != e.Path || strings.Contains(e.Path, `\`) || !filepath.IsLocal(filepath.FromSlash(name)) || strings.HasPrefix(name, StagePrefix) {
-			return nil, fmt.Errorf("%q: not a relative name inside the directory", e.Path)
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("%q: offered twice", e.Path)
-		}
-		seen[name] = true
-		if e.Size < 0 || (e.Dir && e.Size != 0) {
-			return nil, fmt.Errorf("%q: bad size", e.Path)
-		}
-		if d, err := hex.DecodeString(e.SHA256); !e.Dir && (err != nil || len(d) != sha256.Size) {
-			return nil, fmt.Errorf("%q: bad SHA-256", e.Path)
-		}
-		if top, _, _ := strings.Cut(name, "/"); !slices.Contains(r.tops, top) {
-			r.tops = append(r.tops, top)
-		}
+	r := &receiver{m: m, raw: raw}
+	var err error
+	if r.tops, err = checkManifest(m); err != nil {
+		return nil, err
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -167,6 +154,9 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 		return nil, err
 	}
 	if r.lk, err = lockStage(root, r.stage); err != nil {
+		if traceOn {
+			r.trOpen(created, "Busy")
+		}
 		_ = root.Close()
 		return nil, err
 	}
@@ -176,13 +166,19 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 	if b, err := root.ReadFile(path.Join(r.stage, intentName)); err == nil && json.Unmarshal(b, &in) == nil && in.Manifest == r.sum {
 		r.finishing = true
 	} else if top := r.taken(); top != "" {
+		if traceOn {
+			r.trOpen(created, "Taken")
+		}
 		if created {
 			_ = removeStage(root, r.stage, r.lk)
 		} else {
 			release(r.lk)
 		}
 		_ = root.Close()
-		return nil, fmt.Errorf("%q exists in the receiving directory", top)
+		return nil, fmt.Errorf("%q %w", top, errExists)
+	}
+	if traceOn {
+		r.trOpen(created, "Open")
 	}
 	r.sweep()
 	if r.sr, err = root.OpenRoot(r.stage); err != nil {
@@ -191,6 +187,35 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// checkManifest checks m (relative names inside the directory, files and
+// directories only, no name twice) and returns its top-level names.
+func checkManifest(m Manifest) (tops []string, err error) {
+	if m.Version != Version {
+		return nil, fmt.Errorf("protocol version %d, this nfltr-send speaks %d: update both ends", m.Version, Version)
+	}
+	seen := map[string]bool{}
+	for _, e := range m.Entries {
+		name := path.Clean(e.Path)
+		if name != e.Path || strings.Contains(e.Path, `\`) || !filepath.IsLocal(filepath.FromSlash(name)) || strings.HasPrefix(name, StagePrefix) {
+			return nil, fmt.Errorf("%q: not a relative name inside the directory", e.Path)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("%q: offered twice", e.Path)
+		}
+		seen[name] = true
+		if e.Size < 0 || (e.Dir && e.Size != 0) {
+			return nil, fmt.Errorf("%q: bad size", e.Path)
+		}
+		if d, err := hex.DecodeString(e.SHA256); !e.Dir && (err != nil || len(d) != sha256.Size) {
+			return nil, fmt.Errorf("%q: bad SHA-256", e.Path)
+		}
+		if top, _, _ := strings.Cut(name, "/"); !slices.Contains(tops, top) {
+			tops = append(tops, top)
+		}
+	}
+	return tops, nil
 }
 
 // sweep removes the stages, other than this offer's, that nobody wrote to
@@ -222,45 +247,74 @@ func (r *receiver) sweep() {
 		if err != nil {
 			continue
 		}
-		if hasIntent, finished := r.finishStage(e.Name()); hasIntent && !finished {
-			release(lk)
-		} else {
-			_ = removeStage(r.root, e.Name(), lk)
-		}
+		r.finishStage(e.Name(), lk)
 	}
 }
 
-// finishStage finishes the commit of a stage holding its own intent record
-// (its name is its manifest digest's): it renames every entry the stage
-// still holds into place, never replacing, and synced. It reports whether
-// the stage had its intent, and whether every entry is in place: a stage
-// with its intent is removed only then, never with entries in it (spec
-// Commit.tla Expire, Open); one whose names are taken stays.
-func (r *receiver) finishStage(stage string) (hasIntent, finished bool) {
+// finishStage takes a stale stage whose lock lk it holds. One holding its
+// own intent record (named by the digest of the manifest the record
+// carries) has its commit finished as the offer's next receive would
+// finish it (commit: an entry the stage no longer holds compared with the
+// manifest, the stage removed only once every entry is in place; spec
+// Commit.tla Open by another process); one whose record is not its own,
+// or that has none, is abandoned and removed (Expire).
+func (r *receiver) finishStage(stage string, lk *os.File) {
 	var in intent
 	b, err := r.root.ReadFile(path.Join(stage, intentName))
 	if err != nil || json.Unmarshal(b, &in) != nil || len(in.Manifest) != 64 || StagePrefix+in.Manifest[:16] != stage {
-		return false, false
-	}
-	es, err := fs.ReadDir(r.root.FS(), stage)
-	if err != nil {
-		return true, false
-	}
-	for _, e := range es {
-		if e.Name() == intentName || e.Name() == lockName {
-			continue
+		if traceOn {
+			traceExpire(r.root, stage)
 		}
-		if err := rename(r.root, path.Join(stage, e.Name()), e.Name()); err != nil {
-			return true, false
-		}
+		_ = removeStage(r.root, stage, lk)
+		return
 	}
-	return true, r.syncDir(r.root) == nil
+	s := &receiver{root: r.root, stage: stage, lk: lk, sum: in.Manifest, finishing: true}
+	if sum := sha256.Sum256(in.Offer); hex.EncodeToString(sum[:]) != in.Manifest || json.Unmarshal(in.Offer, &s.m) != nil {
+		release(lk) // not readable as this stage's: kept, never trusted
+		return
+	}
+	if s.tops, err = checkManifest(s.m); err == nil {
+		s.sr, err = r.root.OpenRoot(stage)
+	}
+	if err == nil {
+		if traceOn {
+			s.trSwept()
+		}
+		_ = s.commit()
+	}
+	s.end()
+}
+
+// end ends the receive's hold of its stage: its lock released, if a
+// commit did not remove the stage with it.
+func (r *receiver) end() {
+	if traceOn {
+		defer r.trAtomic()()
+		r.trEnd()
+	}
+	release(r.lk)
+	r.lk = nil
+	if r.sr != nil {
+		_ = r.sr.Close()
+	}
 }
 
 func (r *receiver) close() {
-	release(r.lk)
-	_ = r.sr.Close()
+	r.end()
 	_ = r.root.Close()
+}
+
+// drop removes a refused transfer's stage under its lock (spec Commit.tla
+// Refuse).
+func (r *receiver) drop() {
+	if traceOn {
+		defer r.trAtomic()()
+		r.trCommit("Refuse", -1)
+	}
+	_ = r.sr.Close()
+	r.sr = nil
+	_ = removeStage(r.root, r.stage, r.lk)
+	r.lk = nil
 }
 
 // taken is the first top-level name dir already holds, or "".
@@ -312,6 +366,13 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 		written int64
 		a       Answer
 	)
+	if traceOn {
+		defer func() {
+			if f != nil {
+				r.trCut()
+			}
+		}()
+	}
 	fail := func(format string, args ...any) (Answer, error) {
 		if f != nil {
 			_ = f.Close()
@@ -337,6 +398,9 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if s.Offset < 0 || s.Offset > e.Size {
 				return fail("offset %d of %q", s.Offset, e.Path)
 			}
+			if traceOn {
+				r.trStart(s.Index, s.Offset)
+			}
 			if f, err = r.open(e, s.Offset); err != nil {
 				return Answer{}, err
 			}
@@ -348,6 +412,9 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if _, err := f.Write(p); err != nil {
 				_ = f.Close()
 				return Answer{}, err
+			}
+			if traceOn {
+				r.trData(p)
 			}
 			left -= int64(len(p))
 			written += int64(len(p))
@@ -367,7 +434,11 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if err != nil {
 				return Answer{}, err
 			}
-			if err := r.verify(r.m.Entries[cur]); err != nil {
+			err = r.verify(r.m.Entries[cur])
+			if traceOn {
+				r.trVerified(err == nil)
+			}
+			if err != nil {
 				return Answer{Message: err.Error()}, nil
 			}
 			a.Files++
@@ -456,43 +527,65 @@ func (r *receiver) commit() error {
 			return err
 		}
 		if top := r.taken(); top != "" {
-			return fmt.Errorf("%q exists in the receiving directory", top)
+			if traceOn {
+				r.trBegin(false)
+			}
+			return fmt.Errorf("%q %w", top, errExists)
 		}
 		if err := r.writeIntent(); err != nil {
 			return err
 		}
+		if traceOn {
+			r.trBegin(true)
+		}
 	}
-	var move []string
-	for _, top := range r.tops {
+	for i, top := range r.tops {
 		_, err := r.sr.Lstat(top)
 		switch {
 		case errors.Is(err, fs.ErrNotExist): // moved before the stop
-			if err := r.placed(top); err != nil {
-				return err
-			}
-		case err != nil:
-			return err
-		default:
-			if _, err := r.root.Lstat(top); !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("%q exists in the receiving directory", top)
-			}
-			move = append(move, top)
+			err = r.placed(top)
+		case err == nil:
+			err = r.move(top)
 		}
-	}
-	for _, top := range move {
-		if err := rename(r.root, path.Join(r.stage, top), top); errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%q exists in the receiving directory", top)
-		} else if err != nil {
+		if traceOn {
+			r.trRename(i, err)
+		}
+		if err != nil {
 			return err
 		}
 	}
 	// Windows has no directory sync (FlushFileBuffers on a directory is
 	// refused); NTFS journals the renames.
 	if err := r.syncDir(r.root); err != nil { // the renames on stable storage
+		if traceOn {
+			r.trPend("Stop", -1)
+		}
 		return err
 	}
+	if traceOn {
+		defer r.trAtomic()()
+		r.trCommit("Finish", -1)
+	}
+	_ = r.sr.Close()
+	r.sr = nil
 	err := removeStage(r.root, r.stage, r.lk)
 	r.lk = nil
+	return err
+}
+
+// errExists is a top-level name the receiving directory already holds.
+var errExists = errors.New("exists in the receiving directory")
+
+// move renames top from the stage into place, never replacing a name the
+// directory holds (spec Commit.tla Rename).
+func (r *receiver) move(top string) error {
+	if _, err := r.root.Lstat(top); !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%q %w", top, errExists)
+	}
+	err := rename(r.root, path.Join(r.stage, top), top)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%q %w", top, errExists)
+	}
 	return err
 }
 
@@ -538,7 +631,7 @@ func (r *receiver) holds(e Entry) bool {
 
 // writeIntent writes the intent record and puts it on stable storage.
 func (r *receiver) writeIntent() error {
-	b, err := json.Marshal(intent{Manifest: r.sum})
+	b, err := json.Marshal(intent{Manifest: r.sum, Offer: r.raw})
 	if err != nil {
 		return err
 	}
