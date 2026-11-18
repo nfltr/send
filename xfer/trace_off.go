@@ -13,18 +13,18 @@ const traceOn = false
 
 type recvTrace struct{}
 
-func traceAtomic() func()                { return nil }
-func traceExpire(*os.Root, string)       {}
-func (r *receiver) trAtomic() func()     { return nil }
-func (r *receiver) trOpen(bool, string)  {}
-func (r *receiver) trSwept()             {}
-func (r *receiver) trStart(int, int64)   {}
-func (r *receiver) trData([]byte)        {}
-func (r *receiver) trBad([]byte)         {}
-func (r *receiver) trVerified(bool)      {}
-func (r *receiver) trCut()               {}
-func (r *receiver) trBegin(bool)         {}
-func (r *receiver) trRename(int, error)  {}
-func (r *receiver) trPend(string, int)   {}
-func (r *receiver) trCommit(string, int) {}
-func (r *receiver) trEnd()               {}
+func traceAtomic() func()                   { return nil }
+func traceExpire(*os.Root, string)          {}
+func (r *receiver) trAtomic() func()        { return nil }
+func (r *receiver) trOpen(bool, string)     {}
+func (r *receiver) trSwept()                {}
+func (r *receiver) trStart(int, [][2]int64) {}
+func (r *receiver) trData([]byte, int64)    {}
+func (r *receiver) trBad([]byte, int64)     {}
+func (r *receiver) trVerified(bool)         {}
+func (r *receiver) trCut()                  {}
+func (r *receiver) trBegin(bool)            {}
+func (r *receiver) trRename(int, error)     {}
+func (r *receiver) trPend(string, int)      {}
+func (r *receiver) trCommit(string, int)    {}
+func (r *receiver) trEnd()                  {}

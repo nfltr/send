@@ -183,9 +183,9 @@ func TestCutTransferResumes(t *testing.T) {
 }
 
 // A part is verified chunk by chunk before it is resumed: a corrupted
-// chunk (a torn write, another program) is sent again with every chunk
-// after it, the chunks before it are kept (spec Open, mutant
-// resume-unverified).
+// chunk (a torn write, another program) is sent again with the chunks
+// that are missing; every chunk that verifies is kept, also after it (spec
+// Open; mutants resume-unverified, resend-verified).
 func TestResumeOfACorruptedPartKeepsItsVerifiedChunks(t *testing.T) {
 	src := tree(t, 2<<20)
 	s, err := NewSource([]string{src})
@@ -200,7 +200,7 @@ func TestResumeOfACorruptedPartKeepsItsVerifiedChunks(t *testing.T) {
 		b[at] ^= 0xff
 		must(t, os.WriteFile(part, b, 0o600))
 		sr, rr := session(t, s, dst, 0)
-		if want := int64(2<<20 + 5 - at/maxData*maxData); rr.err != nil || !rr.a.OK || sr.sent != want {
+		if want := int64(2<<20 + 5 - (len(b)/maxData-1)*maxData); rr.err != nil || !rr.a.OK || sr.sent != want {
 			t.Fatalf("corrupted at %d: sender %+v, receiver %+v, want %d bytes sent", at, sr, rr, want)
 		}
 		if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
@@ -293,8 +293,8 @@ func TestWrongRootCommitsNothing(t *testing.T) {
 
 // A chunk that lands wrong on the receiver's disk after it verified is
 // caught by the file's BLAKE3 over what is on disk: nothing is committed,
-// the file is cut to its verified chunks and the next session resumes
-// there (spec Finish, mutant no-final-check).
+// the file is kept and the next session sends that chunk only (spec
+// Finish, mutant no-final-check).
 func TestChunkThatLandedWrongIsCaught(t *testing.T) {
 	src := tree(t, 2<<20)
 	s, err := NewSource([]string{src})
@@ -312,11 +312,11 @@ func TestChunkThatLandedWrongIsCaught(t *testing.T) {
 	if !errors.Is(rr.err, ErrUnverified) || rr.a.OK {
 		t.Fatalf("receiver %+v: want ErrUnverified", rr)
 	}
-	if fi, err := os.Stat(filepath.Join(stage, "data", "big.bin")); err != nil || fi.Size() != maxData {
-		t.Fatalf("part %v, %v: want the first chunk only", fi, err)
+	if fi, err := os.Stat(filepath.Join(stage, "data", "big.bin")); err != nil || fi.Size() != 2<<20 {
+		t.Fatalf("part %v, %v: want the whole file kept", fi, err)
 	}
 	sr, rr := session(t, s, dst, 0)
-	if rr.err != nil || !rr.a.OK || sr.sent != 2<<20+5-maxData {
+	if rr.err != nil || !rr.a.OK || sr.sent != maxData+5 {
 		t.Fatalf("resumed: sender %+v, receiver %+v", sr, rr)
 	}
 	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
@@ -990,5 +990,33 @@ func TestSmallFilesResumeWithoutKeptTrees(t *testing.T) {
 	}
 	if digest(t, d) != digest(t, filepath.Join(dst, "small")) {
 		t.Fatal("resumed transfer differs from the source")
+	}
+}
+
+// A part whose every chunk arrived but one that no longer verifies, in its
+// middle, has that one chunk sent again, nothing else of it (spec Open,
+// Minimal; mutant resend-verified: the 969 MB resent of a 1 GiB file).
+func TestResumeSendsOnlyTheBadChunk(t *testing.T) {
+	src := tree(t, 8*maxData)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	frame := func(v any) int64 { b, _ := json.Marshal(v); return 5 + int64(len(b)) }
+	allData := frame(s.Manifest) + frame(start{Index: 1}) + 5 + int64(verified.OutboardSize(8*maxData)) + 8*(5+maxData) // cut before its end frame
+	dst := t.TempDir()
+	_, _ = session(t, s, dst, allData)
+	part := filepath.Join(dst, names(t, dst)[0], "data", "big.bin")
+	b, err := os.ReadFile(part)
+	must(t, err)
+	if len(b) != 8*maxData {
+		t.Fatalf("part of %d bytes, want the whole file", len(b))
+	}
+	b[3*maxData+1] ^= 0xff
+	must(t, os.WriteFile(part, b, 0o600))
+	sr, rr := session(t, s, dst, 0)
+	if rr.err != nil || !rr.a.OK || sr.sent != maxData+5 {
+		t.Fatalf("resumed: sender %+v, receiver %+v, want one chunk and small.txt sent", sr, rr)
+	}
+	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+		t.Fatal("differs from the source")
 	}
 }

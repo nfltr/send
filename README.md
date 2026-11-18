@@ -38,7 +38,8 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   `.nfltr-send-*` directory beside it, with each file's hash tree); the
   receiver resumes by itself, and the next `receive` of the same offer
   resumes from there: each kept part is verified chunk by chunk against the
-  root, and only what is missing or does not verify is sent again. A refused transfer keeps nothing; a stage
+  root, and only the chunks missing or not verifying are sent again,
+  wherever they are in the file. A refused transfer keeps nothing; a stage
   nobody wrote to for 7 days is an abandoned offer's, and the next
   `receive` into that directory removes it, or, when that offer's commit
   had begun (a receiver that died while moving its entries into place),

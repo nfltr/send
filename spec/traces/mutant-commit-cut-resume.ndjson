@@ -1,4 +1,4 @@
 {"ev":"Init","n":3}
-{"ev":"Open","part":[],"off":0}
+{"ev":"Open","part":["h","h","h"],"need":[1,2,3]}
 {"ev":"Send","i":1,"v":"a"}
 {"ev":"Finish","ok":true}

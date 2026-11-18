@@ -1,0 +1,10 @@
+{"ev":"Init","n":3}
+{"ev":"Open","part":["h","h","h"],"need":[1,2,3]}
+{"ev":"Send","i":1,"v":"a"}
+{"ev":"Send","i":2,"v":"b"}
+{"ev":"Send","i":3,"v":"c"}
+{"ev":"Finish","ok":false}
+{"ev":"Open","part":["a","x","c"],"need":[2,3]}
+{"ev":"Send","i":2,"v":"b"}
+{"ev":"Send","i":3,"v":"c"}
+{"ev":"Finish","ok":true}

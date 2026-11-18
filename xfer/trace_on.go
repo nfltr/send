@@ -55,8 +55,6 @@ type stageTrace struct {
 
 type fileTrace struct {
 	f    *os.File
-	off  int64 // the next byte the receiver writes
-	cur  hash.Hash
 	done bool // verified: Resume's committed
 }
 
@@ -193,11 +191,10 @@ func traceExpire(root *os.Root, stage string) {
 // chunk is a Resume.tla chunk's value: its bytes' digest, short.
 func chunk(h hash.Hash) string { return hex.EncodeToString(h.Sum(nil))[:12] }
 
-func chunks(n int64) int { return int((n + maxData - 1) / maxData) }
-
-// trStart: a file's start frame (Resume Open, with the part on disk before
-// the receiver cuts it to the offset; Commit Write of its top).
-func (r *receiver) trStart(i int, off int64) {
+// trStart: a file's start frame (Resume Open: the part on disk, a chunk's
+// digest or "h" where it has no byte, and the chunks asked for; Commit
+// Write of its top).
+func (r *receiver) trStart(i int, todo [][2]int64) {
 	st := r.tr.st
 	if st == nil {
 		return
@@ -221,58 +218,48 @@ func (r *receiver) trStart(i int, off int64) {
 		st.files[i] = ft
 		st.emit(f, map[string]any{"ev": "Init", "n": chunks(e.Size)})
 	}
-	part := []string{}
-	if g, err := r.sr.Open(e.Path); err == nil {
-		for {
-			h := sha256.New()
-			n, err := io.CopyN(h, g, maxData)
-			if n > 0 {
-				part = append(part, chunk(h))
-			}
-			if err != nil || len(part) == chunks(e.Size) {
-				break
-			}
+	part := make([]string, chunks(e.Size))
+	g, err := r.sr.Open(e.Path)
+	for k := range part {
+		part[k] = "h"
+		if err != nil {
+			continue
 		}
+		h := sha256.New()
+		if n, _ := io.Copy(h, io.NewSectionReader(g, int64(k)*maxData, min(maxData, e.Size-int64(k)*maxData))); n > 0 {
+			part[k] = chunk(h)
+		}
+	}
+	if err == nil {
 		_ = g.Close()
 	}
-	k := -1
-	switch {
-	case off == e.Size:
-		k = chunks(e.Size)
-	case off%maxData == 0:
-		k = int(off / maxData)
+	asked := []int64{}
+	for _, t := range todo {
+		for c := t[0]; c < t[1]; c++ {
+			asked = append(asked, c+1)
+		}
 	}
-	ft.off, ft.cur = off, sha256.New()
-	st.emit(ft.f, map[string]any{"ev": "Open", "part": part, "off": k})
+	st.emit(ft.f, map[string]any{"ev": "Open", "part": part, "need": asked})
 }
 
-// trData: a data frame written; a chunk complete on disk is Resume Send.
-func (r *receiver) trData(p []byte) {
+// trData: a chunk verified and written at off (Resume Send).
+func (r *receiver) trData(p []byte, off int64) {
 	if r.tr.st == nil || r.tr.st.files[r.tr.cur] == nil {
 		return
 	}
-	ft, size := r.tr.st.files[r.tr.cur], r.m.Entries[r.tr.cur].Size
-	for len(p) > 0 {
-		end := min((ft.off/maxData+1)*maxData, size)
-		n := min(int64(len(p)), end-ft.off)
-		ft.cur.Write(p[:n])
-		ft.off += n
-		p = p[n:]
-		if ft.off == end {
-			r.tr.st.emit(ft.f, map[string]any{"ev": "Send", "i": chunks(ft.off), "v": chunk(ft.cur)})
-			ft.cur = sha256.New()
-		}
-	}
+	h := sha256.New()
+	h.Write(p)
+	r.tr.st.emit(r.tr.st.files[r.tr.cur].f, map[string]any{"ev": "Send", "i": off/maxData + 1, "v": chunk(h)})
 }
 
 // trBad: a chunk that does not verify, refused (Resume Bad).
-func (r *receiver) trBad(p []byte) {
+func (r *receiver) trBad(p []byte, off int64) {
 	if r.tr.st == nil || r.tr.st.files[r.tr.cur] == nil {
 		return
 	}
-	ft, h := r.tr.st.files[r.tr.cur], sha256.New()
+	h := sha256.New()
 	h.Write(p)
-	r.tr.st.emit(ft.f, map[string]any{"ev": "Bad", "i": chunks(ft.off) + 1, "v": chunk(h)})
+	r.tr.st.emit(r.tr.st.files[r.tr.cur].f, map[string]any{"ev": "Bad", "i": off/maxData + 1, "v": chunk(h)})
 }
 
 // trVerified: a file's digest over what is on disk compared (Resume

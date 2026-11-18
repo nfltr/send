@@ -7,11 +7,12 @@
 //
 //  1. sender: manifest (the entries: paths, sizes, modes, mtimes, and each
 //     file's BLAKE3 root, taken when it was offered);
-//  2. receiver: want (per file it holds a part of: the length of the
-//     part's prefix that verifies against the root, in whole chunks);
-//  3. sender, per file in manifest order: start (the offset it sends
-//     from: the want's, else 0), tree (the file's Bao outboard,
-//     package verified), data (one chunk per frame), end; then done;
+//  2. receiver: want (per file it holds a part of: the runs of the
+//     part's chunks that verify against the root);
+//  3. sender, per file in manifest order: start (whether it keeps the
+//     want's runs), tree (the file's Bao outboard, package verified),
+//     data (one chunk per frame: every chunk outside the kept runs, in
+//     order), end; then done;
 //  4. receiver: answer. It verifies each chunk on arrival against the
 //     manifest's root and writes only one that verifies (a chunk that does
 //     not ends the session, ErrUnverified, the verified part kept); it
@@ -19,7 +20,8 @@
 //     what is on its disk is the manifest's root, so a cut session leaves
 //     nothing in place, only the verified parts it resumes from.
 //
-// The resume rules are spec/Resume.tla's (Open, Send, Bad, Finish); the
+// The resume rules are spec/Resume.tla's (Open, Send, Bad, Finish): a
+// session sends again only the chunks missing or not verifying; the
 // mutants there are the failures they prevent.
 package xfer
 
@@ -35,7 +37,7 @@ import (
 )
 
 // Version is the protocol's, in the manifest.
-const Version = 3
+const Version = 4
 
 // Frame types.
 const (
@@ -74,10 +76,11 @@ type Manifest struct {
 	Entries []Entry `json:"entries"`
 }
 
-// Part is a file the receiver holds a verified part of.
+// Part is a file the receiver holds a verified part of: the runs of its
+// chunks that verify, each [first, end) in chunks, in order.
 type Part struct {
-	Index  int   `json:"i"`
-	Offset int64 `json:"offset"`
+	Index int        `json:"i"`
+	Have  [][2]int64 `json:"have"`
 }
 
 type want struct {
@@ -85,8 +88,36 @@ type want struct {
 }
 
 type start struct {
-	Index  int   `json:"i"`
-	Offset int64 `json:"offset"`
+	Index int  `json:"i"`
+	Kept  bool `json:"kept,omitempty"` // the want's runs are not sent
+}
+
+// chunks is the number of chunks of a file of size bytes.
+func chunks(size int64) int64 { return (size + maxData - 1) / maxData }
+
+// need is what is sent of a file of n chunks whose runs have are kept:
+// the runs between them, in order. have must be valid (validRuns).
+func need(have [][2]int64, n int64) (out [][2]int64) {
+	var at int64
+	for _, r := range append(have, [2]int64{n, n}) {
+		if r[0] > at {
+			out = append(out, [2]int64{at, r[0]})
+		}
+		at = r[1]
+	}
+	return out
+}
+
+// validRuns: runs in order, each non-empty, inside n chunks.
+func validRuns(runs [][2]int64, n int64) bool {
+	var at int64
+	for _, r := range runs {
+		if r[0] < at || r[1] <= r[0] || r[1] > n {
+			return false
+		}
+		at = r[1]
+	}
+	return true
 }
 
 type end struct {

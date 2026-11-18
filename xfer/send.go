@@ -151,10 +151,10 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 	return a, sent, err
 }
 
-// sendFile sends entry i from the part's offset when it is a chunk
-// boundary inside the file (the receiver verified the part before it;
-// spec Open), else from 0: its tree, its chunks, then its end. The receiver
-// verifies each chunk against the manifest's root (spec Send, Bad).
+// sendFile sends entry i: its start, its tree, every chunk outside the
+// part's runs when they are valid (the receiver verified them; spec Open),
+// else every chunk, then its end. The receiver verifies each chunk
+// against the manifest's root (spec Send, Bad).
 func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, error) {
 	f, err := os.Open(s.files[i])
 	if err != nil {
@@ -164,14 +164,11 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	if err := unchanged(f, e); err != nil {
 		return 0, err
 	}
-	var off int64
-	if p.Offset > 0 && p.Offset <= e.Size && (p.Offset%maxData == 0 || p.Offset == e.Size) {
-		off = p.Offset
+	kept := len(p.Have) > 0 && validRuns(p.Have, chunks(e.Size))
+	if !kept {
+		p.Have = nil
 	}
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return 0, err
-	}
-	if err := c.writeJSON(frameStart, start{Index: i, Offset: off}); err != nil {
+	if err := c.writeJSON(frameStart, start{Index: i, Kept: kept}); err != nil {
 		return 0, err
 	}
 	for t := s.trees[i].Outboard; len(t) > 0; t = t[min(len(t), maxData):] {
@@ -185,15 +182,21 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 		return 0, err
 	}
 	var n int64
-	for n < e.Size-off {
-		k, err := io.ReadFull(readFile(f), buf[5:5+min(maxData, e.Size-off-n)])
-		if err != nil {
-			return n, fmt.Errorf("%s: %w (changed while being sent?)", e.Path, err)
-		}
-		if err := c.writeFrame(frameData, buf[:5+k]); err != nil {
+	for _, r := range need(p.Have, chunks(e.Size)) {
+		off, end := r[0]*maxData, min(r[1]*maxData, e.Size)
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
 			return n, err
 		}
-		n += int64(k)
+		for ; off < end; off += maxData {
+			k, err := io.ReadFull(readFile(f), buf[5:5+min(maxData, end-off)])
+			if err != nil {
+				return n, fmt.Errorf("%s: %w (changed while being sent?)", e.Path, err)
+			}
+			if err := c.writeFrame(frameData, buf[:5+k]); err != nil {
+				return n, err
+			}
+			n += int64(k)
+		}
 	}
 	if err := unchanged(f, e); err != nil {
 		return n, err

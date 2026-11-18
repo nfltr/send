@@ -116,6 +116,38 @@ func (t Tree) Verify(r io.ReaderAt) (n int64, whole bool, err error) {
 	return min(b*GroupSize, t.Size), b == chunks && (t.Size > 0 || t.Root == empty), err
 }
 
+// Good checks every chunk of r against the root, GOMAXPROCS at a time,
+// and reports which verify (a short or missing chunk does not).
+func (t Tree) Good(r io.ReaderAt) ([]bool, error) {
+	chunks := (t.Size + GroupSize - 1) / GroupSize
+	good := make([]bool, chunks)
+	if !t.Valid() {
+		return good, nil
+	}
+	var next atomic.Int64
+	var mu sync.Mutex
+	var err error
+	var wg sync.WaitGroup
+	for range min(int64(runtime.GOMAXPROCS(0)), chunks) {
+		wg.Go(func() {
+			buf := make([]byte, GroupSize)
+			for i := next.Add(1) - 1; i < chunks; i = next.Add(1) - 1 {
+				off := i * GroupSize
+				p := buf[:min(GroupSize, t.Size-off)]
+				k, rerr := r.ReadAt(p, off)
+				good[i] = k == len(p) && t.Chunk(p, off)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					mu.Lock()
+					err = rerr
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	wg.Wait()
+	return good, err
+}
+
 var empty = blake3.Sum256(nil)
 
 // Sum is the BLAKE3 hash of r: a whole file's root. It writes 4 MiB at a

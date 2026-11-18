@@ -1,7 +1,7 @@
 {"ev":"Init","n":2}
-{"ev":"Open","part":[],"off":0}
+{"ev":"Open","part":["h","h"],"need":[1,2]}
 {"ev":"Send","i":1,"v":"a"}
 {"ev":"Cut"}
-{"ev":"Open","part":["b"],"off":1}
+{"ev":"Open","part":["b","h"],"need":[2]}
 {"ev":"Send","i":2,"v":"c"}
 {"ev":"Finish","ok":true}
