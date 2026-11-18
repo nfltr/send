@@ -348,7 +348,11 @@ func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.D
 		case err == nil && a.OK:
 			el := time.Since(t0).Seconds()
 			mu.Lock()
-			fmt.Fprintf(os.Stderr, "received %d files, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, a.Bytes, el, float64(a.Bytes)/1e6/el, path)
+			files := "files"
+			if a.Files == 1 {
+				files = "file"
+			}
+			fmt.Fprintf(os.Stderr, "received %d %s, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, files, a.Bytes, el, float64(a.Bytes)/1e6/el, path)
 			if asJSON {
 				b, _ := json.Marshal(map[string]any{"files": a.Files, "bytes": a.Bytes, "written": written, "seconds": el,
 					"first_byte_s": first.Seconds(), "sessions": try, "paths": paths})

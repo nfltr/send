@@ -9,7 +9,7 @@ whoever holds it receives.
 sender$ nfltr-send send big.bin > address
 serving 1 files, 1073741824 bytes; give the receiver this address (a secret: whoever holds it can receive):
 receiver$ nfltr-send receive --to ~/Downloads < address
-received 1 files, 1073741824 bytes in 4.5 s (237 MB/s), path direct
+received 1 file, 1073741824 bytes in 4.5 s (237 MB/s), path direct
 ```
 
 That run, and the numbers below, had both ends on one Mac (Apple M5,
@@ -171,6 +171,8 @@ $ curl -fsSLO https://raw.githubusercontent.com/nfltr/send/main/release/allowed_
 $ ssh-keygen -Y verify -f allowed_signers -I nfltr-release -n nfltr-release -s SHA256SUMS.sshsig < SHA256SUMS
 $ grep " $f\$" SHA256SUMS | sha256sum -c && chmod +x $f && mv $f ~/bin/nfltr-send
 ```
+
+On macOS, which has no `sha256sum`, check the sum with `shasum -a 256 -c` instead.
 
 ## Build
 
