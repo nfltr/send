@@ -11,17 +11,18 @@ trap 'rm -rf "$tmp"' EXIT
 tlc() { mod=$1 cfg=$2; shift 2; "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers 2 -cleanup -noGenerateSpecTE -metadir "$tmp/$cfg" "$@" -config "$cfg.cfg" "$mod.tla" 2>&1 | sed 's/^/  /' >"$tmp/$cfg.out" || true; }
 fail=0
 tlc Resume Resume -coverage 1
-# zero coverage outside CleanEnd (enabled only under mutant commit-cut)
-zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module Resume: 0$/ && a != "<CleanEnd" {print}' "$tmp/Resume.out")
+# zero coverage outside CleanEnd (enabled only under mutant commit-cut) and
+# the action properties' subscripts
+zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module Resume: 0$/ && a != "<CleanEnd" && a != "<Action" {print}' "$tmp/Resume.out")
 if grep -q 'No error has been found' "$tmp/Resume.out" && [ -z "$zero" ]; then echo "ok   Resume: invariants and Done hold, every action taken"
 else echo "FAIL Resume"; cat "$tmp/Resume.out"; fail=1; fi
-for c in WitnessResumedCommit WitnessChangedThenCommit WitnessDiscarded; do
+for c in WitnessResumedCommit WitnessChangedThenCommit WitnessDiscarded WitnessRefusedThenCommit; do
 	tlc Resume "$c"
 	if grep -q "Invariant $c is violated" "$tmp/$c.out"; then echo "ok   $c violated (reachable)"; else echo "FAIL $c not violated"; fail=1; fi
 done
-for m in commit-cut no-checks no-final-check trust-partial; do
+for m in accept-unverified resume-unverified root-unbound commit-cut no-final-check; do
 	tlc Resume "mutant-$m"
-	if grep -E -q 'Invariant Safe is violated|Temporal properties were violated|Temporal property Done was violated' "$tmp/mutant-$m.out"; then echo "ok   mutant $m caught"; else echo "FAIL mutant $m not caught"; fail=1; fi
+	if v=$(grep -E -o '(Invariant|Action property) [A-Za-z]+ (of the PROPERTIES )?is violated' "$tmp/mutant-$m.out"); then echo "ok   mutant $m caught ($v)"; else echo "FAIL mutant $m not caught"; fail=1; fi
 done
 tlc Commit Commit -coverage 1
 zero=$(grep ' of module Commit: 0$' "$tmp/Commit.out" || true)

@@ -2,11 +2,20 @@
 
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
-of what it wrote, a chunk on its disk that is not what was sent (a write
+of what it wrote, a chunk on its disk that is not what was written (a write
 that landed wrong, a bad disk, another program; in a session or between
-sessions), and a sender restarted with another file. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
+sessions), and a sender's file rewritten (between sessions or during one).
+The offer pins the file's BLAKE3 root (an ideal hash tree: the root fixes
+every chunk). The receiver verifies each chunk on arrival against that root
+(Bao verified streaming, the tree's outboard sent ahead of the data) and
+writes only a chunk that verifies; one that does not is refused at once
+and ends the session (`Bad`). A session opens with the receiver verifying
+its part chunk by chunk with the tree it kept and resuming after a verified
+prefix (`Open`); at the end it verifies the whole file on its disk and
+commits it only when every chunk verifies, else keeps the verified prefix
+(`Finish`). `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
 with `-coverage 1`, each witness (must be violated) and each mutant (must
-be caught). N = 3 chunks, two chunk values, two faults: 608 states.
+be caught). N = 3 chunks, two chunk values, two faults: 3832 states.
 
 `Commit.tla` models the step after it, with two receivers of the same
 offer into the same directory: each opens the offer's stage by taking its
@@ -32,21 +41,25 @@ receivers, two faults: 1250 states.
 
 | invariant / property | meaning |
 |---|---|
-| `Safe` | only the sender's file is ever committed, whole |
-| `Done` | with finitely many faults, every transfer commits |
+| `Safe` | only the offered file (the pinned root's) is ever committed, whole |
+| `Kept` | a chunk the receiver writes verifies against the pinned root (an action property) |
+| `Resumed` | a session resumes only after chunks that verify (an action property) |
+| `Done` | with finitely many faults, the transfer commits, or the sender's file is no longer the offered one |
 
 | witness (violated) | shows |
 |---|---|
 | `WitnessResumedCommit` | a commit after a resume at a non-zero offset |
 | `WitnessChangedThenCommit` | a commit after the maximum of faults |
 | `WitnessDiscarded` | a resumed part discarded |
+| `WitnessRefusedThenCommit` | a commit after a chunk was refused |
 
 | mutant | the failure it plants | caught by |
 |---|---|---|
+| `accept-unverified` | a chunk written without verifying it | `Kept` |
+| `resume-unverified` | resume after the whole part, past a chunk that does not verify | `Resumed` |
+| `root-unbound` | chunks verified against the root of the file the sender has now, not the pinned offer's | `Kept` |
 | `commit-cut` | a session that ends cleanly between chunks is taken as the end (a tar stream's clean EOF between entries) | `Safe` |
-| `no-checks` | resume at the part's length without the prefix check, commit without the final digest | `Safe` |
-| `no-final-check` | commit without the final digest (a write that landed wrong in this session) | `Safe` |
-| `trust-partial` | resume without the prefix check and keep a part whose digest differed | `Done` |
+| `no-final-check` | commit without verifying the file on disk (a write that landed wrong in this session) | `Safe` |
 
 ### Commit.tla
 
