@@ -16,10 +16,10 @@ sender), so the relay carries a transfer whose direct path does not form.
 |---|---|---|
 | `gen.sh` | sender | the data: one file of AES-CTR keystream (`gen.sh file f10g 10G`), 100,000 x 4 KiB (`small`), 100,000 files log-uniform 1 KiB to 1 MiB, seed 1, 15.2 GB (`mixed`) |
 | `baseline.sh <host> <ip>` | sender | the path first: RTT (20 pings), iperf3 TCP 1 and 4 streams, UDP offered at 2 Gbit/s in 1,200-byte datagrams |
-| `run.sh <tag> <host> <source>...` | sender | one transfer, one JSON line: sender start to address, receiver start to exit (files committed), total, CPU and peak RSS of each process (GNU time), the receiver's `--json` line; page caches dropped first unless `DROP=0`; `RECV_WRAP` runs the receiver under a command (strace for the syncfs) |
+| `run.sh <tag> <host> <source>...` | sender | one transfer, one JSON line: sender start to address, receiver start to exit (files committed), total, CPU and peak RSS of each process (GNU time), the receiver's `--json` line; page caches dropped first unless `DROP=0`; `RECV_WRAP` runs the receiver under a command (strace for the syncfs); `NFLTR_SEND` names the binary on both ends (to alternate two builds) |
 | `wan.sh on <peer> <rate> <loss>` / `off` / `block <peer>` / `unblock <peer>` | receiver (root) | netem on an ifb behind the ingress, for what arrives from the peer only (GRO and LRO off so netem drops wire packets, queue limit one 200 ms bandwidth-delay product); `block` drops UDP to and from the peer, so only the relayed path works |
 | `wanmatrix.sh <name> <host> <file>` | sender | caps x losses x `RUNS` rounds, each round a direct run then a relayed one |
-| `resume.sh <host> <file>` | sender | a receiver killed (SIGKILL) at half the file, 4 KiB of its kept part overwritten, a second receive of the same address: what it wrote against the ideal (missing bytes plus one 256 KiB chunk) |
+| `resume.sh <host> <file>` | sender | a receiver killed (SIGKILL) at half the file, 4 KiB of its kept part overwritten, a second receive of the same address: what it wrote against the ideal (missing bytes plus one 256 KiB chunk); `NFLTR_SEND` as in `run.sh` |
 | `summarize.py <jsonl>...` | anywhere | medians per tag as a markdown table |
 
 Example, from the sending machine:

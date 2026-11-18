@@ -181,6 +181,16 @@ matched the sent one.
 
 These are one check over one pair of networks, not a benchmark.
 
+## At scale
+
+[`docs/scale.md`](docs/scale.md) measures 10 GiB, 100 GiB and 100,000-file
+transfers, resume after a kill, and paths between regions (3 to 159 ms)
+with rate caps and loss, on 2026-11-18. In v0.1.2 one transfer moves at
+most about 1 MiB per round trip (191 Mbit/s over 36 ms; 41 Mbit/s over
+159 ms). The cause is a window in the relay client, which is fixed there.
+With the fix the same transfers ran at 757 and 265 Mbit/s; a release built
+on it follows. Resume re-sends only what is missing plus the bad chunk.
+
 ## Operating notes
 
 On Linux quic-go, which carries the direct path, asks for UDP socket

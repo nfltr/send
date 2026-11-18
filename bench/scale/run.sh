@@ -17,7 +17,7 @@
 # machine certificate beside it), RECV_DIR (default /data/in, emptied first),
 # SEND_FLAGS RECV_FLAGS (extra flags), RECV_WRAP (a command the receiver
 # runs under GNU time, e.g. strace), DROP (1: drop both page caches first),
-# TIMEOUT (s, default 3600: the receiver is stopped then; arrived_bytes
+# NFLTR_SEND (the binary on both ends, default nfltr-send), TIMEOUT (s, default 3600: the receiver is stopped then; arrived_bytes
 # counts its stage too, so goodput_mbit is what arrived per second either way), OUT (default results.jsonl).
 set -uo pipefail
 tag=$1 rh=$2; shift 2
@@ -34,7 +34,7 @@ if [ "${DROP:-1}" = 1 ]; then
 fi
 src_bytes=$(du -sb "$@" | awk '{s+=$1} END {print s}')
 t0=$(date +%s.%N)
-/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" nfltr-send send --once $rargs ${SEND_FLAGS:-} "$@" >"$w/addr" 2>"$w/send.log" &
+/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" ${NFLTR_SEND:-nfltr-send} send --once $rargs ${SEND_FLAGS:-} "$@" >"$w/addr" 2>"$w/send.log" &
 spid=$!
 until grep -q '^nf1' "$w/addr" 2>/dev/null; do
 	kill -0 $spid 2>/dev/null || { echo "sender exited before its address:" >&2; cat "$w/send.log" >&2; exit 1; }
@@ -42,7 +42,7 @@ until grep -q '^nf1' "$w/addr" 2>/dev/null; do
 done
 t1=$(date +%s.%N)
 # The receiver: GNU time's line, then its exit status, then its --json line.
-out=$(ssh "$rh" "cd /tmp && /usr/bin/time -f '%e %U %S %M' -o /tmp/recv.time timeout $TIMEOUT ${RECV_WRAP:-} nfltr-send receive --json $rargs ${RECV_FLAGS:-} --to $RECV_DIR 2>/tmp/recv.err; echo \"rc \$?\"; cat /tmp/recv.time; grep '^{' /tmp/recv.err | tail -1" <"$w/addr")
+out=$(ssh "$rh" "cd /tmp && /usr/bin/time -f '%e %U %S %M' -o /tmp/recv.time timeout $TIMEOUT ${RECV_WRAP:-} ${NFLTR_SEND:-nfltr-send} receive --json $rargs ${RECV_FLAGS:-} --to $RECV_DIR 2>/tmp/recv.err; echo \"rc \$?\"; cat /tmp/recv.time; grep '^{' /tmp/recv.err | tail -1" <"$w/addr")
 t2=$(date +%s.%N)
 for _ in $(seq 300); do kill -0 $spid 2>/dev/null || break; sleep 0.1; done
 stop; wait $spid; src=$?
