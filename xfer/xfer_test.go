@@ -955,3 +955,40 @@ func TestStaleStageOfACutTransferIsRemoved(t *testing.T) {
 		t.Fatalf("dst holds %q, want only other.txt", got)
 	}
 }
+
+// A file of one chunk keeps no tree in the stage (its tree is its size):
+// a cut after two such files resumes without them, and only the third is
+// sent again.
+func TestSmallFilesResumeWithoutKeptTrees(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "small")
+	must(t, os.MkdirAll(d, 0o755))
+	for _, n := range []string{"a", "b", "c"} {
+		b := make([]byte, 4096)
+		_, _ = rand.Read(b)
+		must(t, os.WriteFile(filepath.Join(d, n), b, 0o644))
+	}
+	s, err := NewSource([]string{d})
+	must(t, err)
+	frame := func(v any) int64 { b, _ := json.Marshal(v); return 5 + int64(len(b)) }
+	cut := frame(s.Manifest)
+	for i := 1; i <= 2; i++ {
+		cut += frame(start{Index: i}) + 5 + int64(verified.OutboardSize(4096)) + 5 + 4096 + frame(end{Index: i})
+	}
+	dst := t.TempDir()
+	if _, rr := session(t, s, dst, cut); rr.err == nil {
+		t.Fatalf("cut: receiver %+v, want an error", rr)
+	}
+	stage := filepath.Join(dst, names(t, dst)[0])
+	for _, n := range names(t, stage) {
+		if strings.HasPrefix(n, StagePrefix+"tree-") {
+			t.Fatalf("stage holds %s: a one-chunk file's tree is not kept", n)
+		}
+	}
+	sr, rr := session(t, s, dst, 0)
+	if rr.err != nil || !rr.a.OK || sr.sent != 4096 {
+		t.Fatalf("resumed: sender %+v, receiver %+v (want only c's 4096 bytes sent)", sr, rr)
+	}
+	if digest(t, d) != digest(t, filepath.Join(dst, "small")) {
+		t.Fatal("resumed transfer differs from the source")
+	}
+}

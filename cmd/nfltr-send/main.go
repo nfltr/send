@@ -306,7 +306,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 }
 
 // receive receives the offer at t into dir, resuming up to tries sessions.
-func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) int {
+func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) (code int) {
 	var mu sync.Mutex
 	path, paths := "relayed", []string{}
 	cfg.Events = func(e nfnet.Event) {
@@ -321,7 +321,17 @@ func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.D
 	if err != nil {
 		return fail(1, err)
 	}
-	defer d.Close() //nolint:errcheck
+	// The dialer's close drains its direct connections until the sender
+	// closes them, up to a second. After a transfer the session's close
+	// (receiveOnce) returned once the sender acknowledged every byte, the
+	// answer with them: the drain runs beside the exit.
+	defer func() {
+		if code == 0 {
+			go d.Close() //nolint:errcheck
+		} else {
+			_ = d.Close()
+		}
+	}()
 	t0 := time.Now()
 	var first time.Duration
 	var written, base int64

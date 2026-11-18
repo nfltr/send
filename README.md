@@ -28,6 +28,12 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   disk verifies against its file's root (checked in parallel; throughput
   notes: [`docs/performance.md`](docs/performance.md)).
   A name that already exists there refuses the transfer.
+- **Durable.** Every received file is on stable storage before the
+  commit's first rename: on Linux by one `syncfs(2)` of the receiving file
+  system (it reports a write error since Linux 5.8), on macOS by an
+  `fsync(2)` per file and then one flush of the drive's cache (the
+  `F_FULLFSYNC` of the commit's intent record), elsewhere by a sync per
+  file. Not one flush per file: that cost milliseconds per small file.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory beside it, with each file's hash tree); the
   receiver resumes by itself, and the next `receive` of the same offer
@@ -42,6 +48,11 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   and made another). One `receive` of an offer into a directory at a time: a second
   one, while the first holds the offer's hidden directory (a lock on a
   file in it), is refused (exit 2).
+- **Commit.** Each top-level name of the offer is renamed into place on
+  its own: one top-level entry (a file, or a directory with everything
+  under it) appears at once; an offer of several top-level names can show
+  some before the others, and a receiver that dies part way leaves them
+  so until the next `receive` of the offer finishes the commit.
 - **No name replaced.** A commit never replaces a name that appears
   meanwhile: its renames refuse an existing name atomically, with
   `renameat2(RENAME_NOREPLACE)` on Linux 3.15+, `renamex_np(RENAME_EXCL)`
@@ -91,6 +102,18 @@ peer to peer:
   `--direct off` with no certificate is refused. A relay that takes no
   address served without an account (setting `nf1.anon.enabled`, off by
   default) refuses the sender (exit 3).
+
+## Operating notes
+
+On Linux a small `net.core.rmem_max` caps the direct path's QUIC receive
+window, and with it the throughput on a path with a long round trip;
+quic-go logs `failed to sufficiently increase receive buffer size` then.
+Raise it (and `wmem_max`) on the receiving machine:
+
+```console
+$ sudo sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000
+$ printf 'net.core.rmem_max=7500000\nnet.core.wmem_max=7500000\n' | sudo tee /etc/sysctl.d/90-quic.conf
+```
 
 ## Install
 

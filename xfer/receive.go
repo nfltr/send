@@ -5,6 +5,7 @@ package xfer
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -326,6 +327,18 @@ func (r *receiver) taken() string {
 // stage: what a part is verified with when a later session resumes it.
 func treeName(i int) string { return StagePrefix + "tree-" + strconv.Itoa(i) }
 
+// keptTree is entry i's tree as the stage kept it. A file of one chunk has
+// no parent nodes: its tree is only its size, never written (a file per
+// small file costs as much as the file).
+func (r *receiver) keptTree(i int, e Entry) ([]byte, error) {
+	if oneChunk(e.Size) {
+		return binary.LittleEndian.AppendUint64(nil, uint64(e.Size)), nil // #nosec G115 -- checkManifest bounds the size
+	}
+	return r.sr.ReadFile(treeName(i))
+}
+
+func oneChunk(size int64) bool { return size <= verified.GroupSize }
+
 // root is entry e's BLAKE3 root (checkManifest checked it).
 func root(e Entry) (r [32]byte) {
 	_, _ = hex.Decode(r[:], []byte(e.BLAKE3))
@@ -345,7 +358,7 @@ func (r *receiver) parts() ([]Part, error) {
 		if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
 			continue
 		}
-		ob, err := r.sr.ReadFile(treeName(i))
+		ob, err := r.keptTree(i, e)
 		if err != nil {
 			continue
 		}
@@ -469,7 +482,7 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 				return fail("tree past its end in entry %d", cur)
 			}
 			tr.Outboard = append(tr.Outboard, p...)
-			if len(tr.Outboard) == need { // kept for a later session's resume
+			if len(tr.Outboard) == need && !oneChunk(tr.Size) { // kept for a later session's resume (keptTree)
 				if err := r.sr.WriteFile(treeName(cur), tr.Outboard, 0o600); err != nil {
 					_ = f.Close()
 					return Answer{}, err
@@ -505,7 +518,7 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 					return Answer{}, err
 				}
 			}
-			err := f.Sync() // on stable storage before it can be committed
+			err := syncFile(f) // on stable storage before the commit begins (syncStage)
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -615,6 +628,9 @@ func (r *receiver) commit() error {
 			if err != nil {
 				return err
 			}
+		}
+		if err := syncStage(r.sr); err != nil {
+			return err
 		}
 		if err := r.syncDirs(); err != nil {
 			return err

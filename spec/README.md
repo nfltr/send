@@ -110,7 +110,7 @@ receivers, two faults: 1250 states.
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
 | BLAKE3 is collision resistant and its tree binds every chunk and its position to the root, so a chunk that verifies at an offset is the offered file's chunk there (the model compares the chunks themselves); the tree's length is the manifest's size | the BLAKE3 paper (2020), section 7 (security); the Bao spec (verified streaming, outboard encoding); `xfer/verified` over `lukechampine.com/blake3/bao` |
 | SHA-256 is collision resistant (the manifest's digest names the stage and the intent record) | FIPS 180-4 |
-| a rename is atomic across a crash; a synced file and its directory entry survive one | rename(2), fsync(2) |
+| a rename is atomic across a crash; a synced file and its directory entry survive one. The received files are synced before the intent record: one syncfs(2) of the file system (Linux), an fsync(2) per file then the intent's F_FULLFSYNC, which flushes the drive's whole cache (macOS), FlushFileBuffers or fsync per file (elsewhere) | rename(2), fsync(2), syncfs(2), fcntl(2) F_FULLFSYNC; `xfer/sync_*.go` |
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `xfer/rename_*.go` |
 
@@ -125,7 +125,7 @@ receivers, two faults: 1250 states.
 | `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
 | `Change` | the sender's disk; `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
 | `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `xfer/lock_*.go` |
-| `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
+| `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent`; `xfer/sync_*.go` (the files synced before it) |
 | `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
 | `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
 | `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `xfer/trace_on.go` (the recorder), `xfer/trace_off.go`; the call sites in `xfer/receive.go` (behind `traceOn`) |
