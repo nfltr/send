@@ -142,6 +142,45 @@ Exit codes: 0 done, 1 usage, 2 refused (a name exists, busy, too many
 sessions, a commit refused), 3 failed, 12 `direct_required` (no direct
 path and no account to relay).
 
+## Tested across NATs
+
+On 2026-11-18 the released binaries (nfltr-send v0.1.1, nfltr v2.1.70)
+ran between two machines behind different NATs: a Mac behind a home
+router whose NAT maps a new port per destination, and a Linux container
+behind Docker's NAT on a cloud machine. Every received file's SHA-256
+matched the sent one.
+
+- **No account, IPv4.** No direct path formed between those two NATs, so
+  both ends stopped with exit 12 `direct_required` (3 runs each way, the
+  receiver after about 56 s): by design nothing is relayed without an
+  account.
+- **No account, IPv6** (the same machines, the container on the host's
+  network): direct both ways, a 64 MiB file and a directory.
+- **A machine certificate on both ends** (`nfltr config login`): the relay
+  carried an 8 MiB file and a directory (5 files, 8,394,632 bytes) both
+  ways, 2 runs each, received in 6.7 to 13.1 s.
+- **ssh and rsync over an nf1 address.** On the server:
+
+  ```console
+  server$ nfltr cat serve ssh --forward 127.0.0.1:22 --address
+  ```
+
+  prints the address once (`--show-address` prints it again); the client
+  keeps it in a 0600 file and names it in `~/.ssh/config`:
+
+  ```
+  Host box
+    ProxyCommand nfltr cat pipe --address-file ~/.ssh/box.addr
+  ```
+
+  `rsync -a --delete` of a tree to `box:` and back left 0 differences
+  (`--itemize-changes`): direct over IPv6 with no account (298 files,
+  30 MiB, 3 runs), relayed with a machine certificate on both ends (98
+  files, 5.8 MiB, 2 runs). Over IPv4 with no account ssh failed as the
+  transfers did (`nfltr cat pipe` exit 12).
+
+These are one check over one pair of networks, not a benchmark.
+
 ## Operating notes
 
 On Linux quic-go, which carries the direct path, asks for UDP socket
