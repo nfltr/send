@@ -6,11 +6,21 @@ directly between them when their networks allow it, through an
 whoever holds it receives.
 
 ```console
-sender$ nfltr-send send report.pdf photos/ > address
-serving 2 files, ...; give the receiver this address (a secret: whoever holds it can receive):
+sender$ nfltr-send send big.bin > address
+serving 1 files, 1073741824 bytes; give the receiver this address (a secret: whoever holds it can receive):
 receiver$ nfltr-send receive --to ~/Downloads < address
-received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
+received 1 files, 1073741824 bytes in 4.5 s (237 MB/s), path direct
 ```
+
+That run, and the numbers below, had both ends on one Mac (Apple M5,
+10 cores) over loopback through a local relay: the program's own ceiling,
+not a network's rate. The receiver's time runs from its start to the
+commit; it leaves out the sender's start (the file's root and outboard,
+built before the address is printed). For one 1 GiB file, v0.1.1, medians
+of 6 runs interleaved with v0.1.0's on a shared machine (load average
+about 35): sender start to address 0.15 s (v0.1.0: 1.47 s), address to
+received 4.68 s (5.29 s), sender start to receiver exit 4.82 s (6.79 s).
+Measurements per change: [`docs/performance.md`](docs/performance.md).
 
 - **End to end.** The session is TLS 1.3 between the two machines, the
   sender's key pinned by the address; the relay sees neither the address's
@@ -25,15 +35,14 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   only one that verifies; a chunk that does not (a file changed since it
   was offered) ends the session at once, the verified chunks kept. Nothing
   lands in the receiving directory until every chunk on the receiver's
-  disk verifies against its file's root (checked in parallel; throughput
-  notes: [`docs/performance.md`](docs/performance.md)).
+  disk verifies against its file's root (checked in parallel).
   A name that already exists there refuses the transfer.
 - **Durable.** Every received file is on stable storage before the
   commit's first rename: on Linux by one `syncfs(2)` of the receiving file
   system (it reports a write error since Linux 5.8), on macOS by an
   `fsync(2)` per file and then one flush of the drive's cache (the
   `F_FULLFSYNC` of the commit's intent record), elsewhere by a sync per
-  file. Not one flush per file: that cost milliseconds per small file.
+  file. Not one flush of the drive per file.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory inside the receiving directory, with each
   file's hash tree); the
@@ -133,9 +142,10 @@ path and no account to relay).
 
 ## Operating notes
 
-On Linux a small `net.core.rmem_max` caps the direct path's QUIC receive
-window, and with it the throughput on a path with a long round trip;
-quic-go logs `failed to sufficiently increase receive buffer size` then.
+On Linux quic-go, which carries the direct path, asks for UDP socket
+buffers larger than a default `net.core.rmem_max` allows and logs
+`failed to sufficiently increase receive buffer size` when it cannot get
+them ([quic-go: UDP buffer sizes](https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes)).
 Raise it (and `wmem_max`) on the receiving machine:
 
 ```console
