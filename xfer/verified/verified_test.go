@@ -8,7 +8,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"lukechampine.com/blake3"
+	"github.com/nfltr/blake3"
 )
 
 func file(t *testing.T, n int) ([]byte, Tree) {

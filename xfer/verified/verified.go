@@ -5,11 +5,13 @@
 // file: the file is its BLAKE3 root; its tree's outboard (the parent
 // nodes, BaoEncodedSize bytes) lets a receiver verify each GroupSize
 // chunk on arrival against the root, and a part it kept on resume. The
-// tree and its checks are lukechampine.com/blake3's bao package, with
-// chunk groups of 2^Group BLAKE3 chunks; the root is the file's BLAKE3
-// hash whatever the group. (Chosen over github.com/zeebo/blake3, which has
-// no Bao, and over writing an outboard tree on a BLAKE3: it is the
-// maintained Go BLAKE3 with Bao encode, decode and slices; MIT.)
+// tree and its checks are the bao package of github.com/nfltr/blake3
+// (lukechampine.com/blake3 v1.4.1 plus arm64 NEON assembly, offered
+// upstream), with chunk groups of 2^Group BLAKE3 chunks; the root is the
+// file's BLAKE3 hash whatever the group. (Chosen over
+// github.com/zeebo/blake3, which has no Bao, and over writing an outboard
+// tree on a BLAKE3: it is the maintained Go BLAKE3 with Bao encode, decode
+// and slices; MIT.)
 package verified
 
 import (
@@ -20,8 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"lukechampine.com/blake3"
-	"lukechampine.com/blake3/bao"
+	"github.com/nfltr/blake3"
+	"github.com/nfltr/blake3/bao"
 )
 
 // Group is the chunk group's size as a power of two of BLAKE3's 1 KiB
