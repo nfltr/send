@@ -35,13 +35,16 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   `F_FULLFSYNC` of the commit's intent record), elsewhere by a sync per
   file. Not one flush per file: that cost milliseconds per small file.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
-  `.nfltr-send-*` directory beside it, with each file's hash tree); the
+  `.nfltr-send-*` directory inside the receiving directory, with each
+  file's hash tree); the
   receiver resumes by itself, and the next `receive` of the same offer
   resumes from there: each kept part is verified chunk by chunk against the
   root, and only the chunks missing or not verifying are sent again,
-  wherever they are in the file. A refused transfer keeps nothing; a stage
-  nobody wrote to for 7 days is an abandoned offer's, and the next
-  `receive` into that directory removes it, or, when that offer's commit
+  wherever they are in the file. A transfer refused at its commit (a name
+  appeared meanwhile, or no atomic rename) keeps its verified stage for a
+  later `receive`. A stage nobody wrote to for 7 days is an abandoned
+  offer's, and the next `receive` into that directory that opens its own
+  stage removes it (one whose intent record does not match is kept), or, when that offer's commit
   had begun (a receiver that died while moving its entries into place),
   finishes it. The next `receive` of the same offer finishes such a
   commit too, and refuses, keeping the stage, when a name the commit had
@@ -57,8 +60,9 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
 - **No name replaced.** A commit never replaces a name that appears
   meanwhile: its renames refuse an existing name atomically, with
   `renameat2(RENAME_NOREPLACE)` on Linux 3.15+, `renamex_np(RENAME_EXCL)`
-  on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows.
-  On a file system that refuses that flag, and on other systems, a file is
+  on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows
+  (where a failed move refuses the transfer). On a Linux or macOS file
+  system that refuses that flag, and on other systems, a file is
   hard-linked into place (which refuses an existing name) and its staged
   name removed, and a directory is not moved: the transfer is refused
   with its files kept staged (receive it on a file system that has the
@@ -67,8 +71,8 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
 The resume and commit rules are checked TLA+ models: [`spec/`](spec/README.md).
 
 The address is a secret. `receive` reads it from `--address-file` (default
-stdin), never from the command line; a file group or others may read is
-refused. On Windows the file's mode does not reflect its ACL (every
+stdin), never from the command line; a file with any group or others
+permission is refused. On Windows the file's mode does not reflect its ACL (every
 writable file reports 0666), so the mode is not checked there: keep the
 file in a directory only you can read, such as your user profile.
 Whoever holds the address can open sessions: the sender serves at most 16
@@ -103,6 +107,29 @@ peer to peer:
   `--direct off` with no certificate is refused. A relay that takes no
   address served without an account (setting `nf1.anon.enabled`, off by
   default) refuses the sender (exit 3).
+
+## What the sender refuses
+
+- A file whose size or modification time changed since it was offered.
+- Anything that is not a regular file or a directory (a symlink, a device).
+- Two sources with the same base name.
+
+The receiver refuses a peer of another protocol version ("update both
+ends"), and the sender a machine certificate issued for another relay.
+
+## Flags and exit codes
+
+`send`: `--once` (exit after the first complete transfer), `--direct
+on|off`, `--machine-credential <file>`, `--relay <address>` (default
+`grpc.nfltr.xyz:443`, or `$NFLTR_SEND_RELAY`), `--relay-http`,
+`--relay-pin <sha256>` (a private relay's certificate).
+`receive`: `--to <dir>`, `--address-file <file>` (default stdin),
+`--tries <n>` (default 10, each session resuming the last), `--json` (one
+JSON line of totals on stderr). `nfltr-send <command> -h` lists them all.
+
+Exit codes: 0 done, 1 usage, 2 refused (a name exists, busy, too many
+sessions, a commit refused), 3 failed, 12 `direct_required` (no direct
+path and no account to relay).
 
 ## Operating notes
 
@@ -140,7 +167,7 @@ $ grep " $f\$" SHA256SUMS | sha256sum -c && chmod +x $f && mv $f ~/bin/nfltr-sen
 ```console
 $ go build ./cmd/nfltr-send
 $ make check   # gofmt, vet, -race tests, a short fuzz run
-$ make spec    # the TLA+ model
+$ make spec    # the TLA+ models (Resume.tla, Commit.tla), their witnesses and mutants
 $ make release-dryrun   # the release files in dist/, built twice and compared, signed with a throwaway key
 ```
 
