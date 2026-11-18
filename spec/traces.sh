@@ -40,12 +40,10 @@ for f in "$tmp"/t/*.ndjson; do
 done
 echo "$n traces checked"
 # Spec actions no accepted trace takes: the behaviour TLC prints for an
-# accepted trace (TraceNotDone violated) is the one that took every line. Resume's Change is unreachable in
-# the code: a changed file is another offer (the stage is named by the
-# manifest's digest), so it is not listed.
-for a in TOpen TSend TFinish TCut TServed HRot HCrash TraceCommit:TOpen TBusy TTaken TWrite TVerify \
-	TraceCommit:TCut TRefuse TBegin TBeginRefused TRename TRenameRefused TStop TraceCommit:TFinish TExpire HForeign HReplace; do
-	case $a in TraceCommit:*) mod=TraceCommit a=${a#*:} ;; TBusy | TTaken | TWrite | TVerify | TRefuse | TBegin* | TRename* | TStop | TExpire | HForeign | HReplace) mod=TraceCommit ;; *) mod=TraceResume ;; esac
+# accepted trace (TraceNotDone violated) is the one that took every line.
+for a in TOpen TSend TBad TFinish TCut TServed HRot HCrash HChange TraceCommit:TOpen TBusy TTaken TWrite TVerify \
+	TraceCommit:TCut TBegin TBeginRefused TRename TRenameRefused TStop TraceCommit:TFinish TExpire HForeign HReplace; do
+	case $a in TraceCommit:*) mod=TraceCommit a=${a#*:} ;; TBusy | TTaken | TWrite | TVerify | TBegin* | TRename* | TStop | TExpire | HForeign | HReplace) mod=TraceCommit ;; *) mod=TraceResume ;; esac
 
 	grep -qE "^State [0-9]+: <$a line .* of module $mod>" "$tmp/cov" || echo "test gap: no trace takes $mod $a"
 	[ -z "${TRACE_WHO:-}" ] || grep -lE "^State [0-9]+: <$a line .* of module $mod>" "$tmp"/t/*.out | sed "s|^|  $mod $a: |"

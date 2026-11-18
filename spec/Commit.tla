@@ -95,7 +95,7 @@ Write(p, t) ==
     /\ stage' = [stage EXCEPT ![t] = "part"]
     /\ UNCHANGED <<dir, pc, next, seen, holds, intent, faults, arrived, lost, crashed>>
 
-\* Verify: the entry's SHA-256 over what is on disk is the manifest's.
+\* Verify: the entry's BLAKE3 over what is on disk is the manifest's root.
 Verify(p, t) ==
     /\ pc[p] = "recv" /\ stage[t] = "part"
     /\ stage' = [stage EXCEPT ![t] = "ok"] /\ seen' = [seen EXCEPT ![p] = @ \cup {t}]
@@ -108,16 +108,6 @@ Cut(p) ==
     /\ pc[p] = "recv" /\ faults < MaxFaults
     /\ pc' = [pc EXCEPT ![p] = "idle"] /\ Release(p) /\ faults' = faults + 1
     /\ UNCHANGED <<stage, dir, next, seen, intent, arrived, lost, crashed>>
-
-\* Refuse: a file's digest over what landed is not the manifest's (a write
-\* that landed wrong, Resume.tla Rot, or a sender whose bytes are not its
-\* manifest's): the transfer is refused and not resumed, so its stage is
-\* removed under the lock; received again, it starts over.
-Refuse(p) ==
-    /\ pc[p] = "recv" /\ faults < MaxFaults
-    /\ stage' = [t \in Tops |-> "none"] /\ intent' = "none" /\ arrived' = {}
-    /\ pc' = [pc EXCEPT ![p] = "idle"] /\ Release(p) /\ faults' = faults + 1
-    /\ UNCHANGED <<dir, next, seen, lost, crashed>>
 
 \* Foreign: a name of the offer's appears in the directory, someone else's,
 \* at any time before the offer is committed, a commit's renames included.
@@ -208,7 +198,7 @@ Served == (\E p \in Procs : pc[p] = "done") /\ UNCHANGED vars
 \* Refused: a foreign name holds the offer back; the stage stays.
 Refused == (\A p \in Procs : pc[p] = "idle") /\ (\E t \in Tops : dir[t] = "foreign") /\ UNCHANGED vars
 
-Proc(p) == Open(p) \/ (\E t \in Tops : Write(p, t) \/ Verify(p, t)) \/ Cut(p) \/ Refuse(p)
+Proc(p) == Open(p) \/ (\E t \in Tops : Write(p, t) \/ Verify(p, t)) \/ Cut(p)
            \/ Begin(p) \/ Rename(p) \/ Stop(p) \/ Finish(p)
 
 Next == (\E p \in Procs : Proc(p)) \/ Foreign \/ Replace \/ Expire \/ Served \/ Refused

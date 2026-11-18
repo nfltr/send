@@ -31,7 +31,6 @@ TTaken == Adv /\ E.ev = "Taken" /\ pc[E.p] = "idle" /\ Free /\ ~Ours(intent) /\ 
 TWrite == Adv /\ E.ev = "Write" /\ Write(E.p, E.t)
 TVerify == Adv /\ E.ev = "Verify" /\ Verify(E.p, E.t)
 TCut == Adv /\ E.ev = "Cut" /\ Cut(E.p)
-TRefuse == Adv /\ E.ev = "Refuse" /\ Refuse(E.p)
 TBegin == Adv /\ E.ev = "Begin" /\ Begin(E.p) /\ pc'[E.p] = "renaming"
 TBeginRefused == Adv /\ E.ev = "BeginRefused" /\ Begin(E.p) /\ pc'[E.p] = "idle"
 TRename == Adv /\ E.ev = "Rename" /\ next[E.p] = E.t /\ Rename(E.p) /\ pc'[E.p] = "renaming"
@@ -45,6 +44,6 @@ HForeign == Hid /\ Foreign
 HReplace == Hid /\ Replace
 
 TraceInit == Init /\ l = 1
-TraceNext == TOpen \/ TBusy \/ TTaken \/ TWrite \/ TVerify \/ TCut \/ TRefuse \/ TBegin \/ TBeginRefused \/ TRename \/ TRenameRefused \/ TStop \/ TFinish \/ TExpire \/ HForeign \/ HReplace
+TraceNext == TOpen \/ TBusy \/ TTaken \/ TWrite \/ TVerify \/ TCut \/ TBegin \/ TBeginRefused \/ TRename \/ TRenameRefused \/ TStop \/ TFinish \/ TExpire \/ HForeign \/ HReplace
 TraceNotDone == l <= Len(Lines)
 =============================================================================

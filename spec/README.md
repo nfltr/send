@@ -34,9 +34,9 @@ rename never replaces. A stale stage (nobody wrote to it for StageLife)
 is removed by another receive's sweep only when its lock is free and it
 holds no intent record of its own; one with its intent is finished by
 that sweep exactly as a recovery would finish it (the intent record carries
-the manifest, so the sweep compares moved entries too). A file whose
-digest over what landed is not the manifest's refuses the transfer, and its
-stage is removed under the lock (Refuse). `spec/check.sh` checks it the same way. N = 2 entries, P = 2
+the manifest, so the sweep compares moved entries too). A file that does
+not verify keeps its verified part (Resume.tla), so for this model its
+session is a Cut. `spec/check.sh` checks it the same way. N = 2 entries, P = 2
 receivers, two faults: 1250 states.
 
 | invariant / property | meaning |
@@ -100,9 +100,10 @@ receivers, two faults: 1250 states.
 |---|---|
 | the session delivers the sender's bytes in order, unaltered, or ends (it never delivers other bytes) | TLS 1.3 records: AEAD with a per-record sequence nonce (RFC 8446 section 5.3), end to end inside the nf1 session (github.com/nfltr/relay `client/nf1`) |
 | a session's end can look clean (EOF) at any record boundary | crypto/tls returns io.EOF on a close without close_notify at a record boundary (Go `crypto/tls` conn.go); RFC 8446 section 6.1 truncation |
-| the sender's file does not change while a session sends it; between sessions it may. The manifest carries each file's SHA-256 from when it was offered; the receiver commits only that digest, and the sender ends a session (`ErrChanged`) when the bytes it sent are not it, or the size or mtime changed. So `Finish`'s comparison with `src` is the code's with the offered digest whenever the code completes a file: the model admits more (a changed file committed), its invariants hold for the stricter code | `xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `xfer/receive.go` `verify` |
+| the sender's file may change at any time (`Change`); the offer does not: the manifest carries each file's BLAKE3 root from when it was offered and the receiver verifies against that root only (the tree the session carries is checked against it, never trusted on its own). The sender also ends a session (`ErrChanged`) when the size or mtime changed | `xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `xfer/receive.go` `run`, `verify` |
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
-| SHA-256 is collision resistant (the model compares the bytes themselves) | FIPS 180-4 |
+| BLAKE3 is collision resistant and its tree binds every chunk and its position to the root, so a chunk that verifies at an offset is the offered file's chunk there (the model compares the chunks themselves); the tree's length is the manifest's size | the BLAKE3 paper (2020), section 7 (security); the Bao spec (verified streaming, outboard encoding); `xfer/verified` over `lukechampine.com/blake3/bao` |
+| SHA-256 is collision resistant (the manifest's digest names the stage and the intent record) | FIPS 180-4 |
 | a rename is atomic across a crash; a synced file and its directory entry survive one | rename(2), fsync(2) |
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `xfer/rename_*.go` |
@@ -111,16 +112,15 @@ receivers, two faults: 1250 states.
 
 | spec | code |
 |---|---|
-| `Open` (the receiver's claim, the prefix check, the offset) | `xfer/receive.go` `parts`, `open`; `xfer/send.go` `sendFile` |
-| `Send` | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameData) |
-| `Finish` (the digest over what is on disk, discard on mismatch) | `xfer/receive.go` `verify`, `commit` |
-| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: a refused transfer's (`Receive`, `drop`) and an abandoned one's (`sweep`, `StageLife`) |
-| `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` and `xfer/send.go` `sendFile` (the prefix check, between sessions) |
-| `Change` | `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
+| `Open` (the part verified with its kept tree, the offset) | `xfer/receive.go` `parts`, `treeName`, `open`; `xfer/send.go` `sendFile`; `xfer/verified` `Prefix` |
+| `Send`, `Bad` (a chunk verified on arrival, or refused) | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameTree, frameData, `ErrUnverified`); `xfer/verified` `Chunk` |
+| `Finish` (the BLAKE3 over what is on disk, cut to the verified prefix on mismatch) | `xfer/receive.go` `verify`, `commit`; `xfer/verified` `Sum`, `Prefix` |
+| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
+| `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
+| `Change` | the sender's disk; `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
 | `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `xfer/lock_*.go` |
 | `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent` |
 | `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
-| `Commit.tla` `Refuse` | `xfer/receive.go` `Receive`, `drop` |
 | `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
 | `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `xfer/trace_on.go` (the recorder), `xfer/trace_off.go`; the call sites in `xfer/receive.go` (behind `traceOn`) |
 
@@ -137,10 +137,10 @@ actions no accepted behaviour takes are listed as test gaps (none now; the
 tests `TestPartWhoseTailWasLostResumes`,
 `TestNameTakenDuringTheTransferRefusesTheCommit` and
 `TestStaleStageOfACutTransferIsRemoved` closed Crash, Begin's refusal and
-Expire). Resume's `Change` is not reachable in the code: a changed file is
-another offer, whose stage the manifest's digest names. Without the tag the
-recorder is `xfer/trace_off.go`, every call site behind the constant
-`traceOn`: no code in a release binary. 82 traces, about 10 s.
+Expire; `TestUnverifiedChunkIsRefused` and
+`TestSenderRefusesAFileRewrittenWhileSent` take Bad and Change). Without
+the tag the recorder is `xfer/trace_off.go`, every call site behind the
+constant `traceOn`: no code in a release binary. 91 traces, about 10 s.
 
 | line (code) | action |
 |---|---|
@@ -149,12 +149,12 @@ recorder is `xfer/trace_off.go`, every call site behind the constant
 | `Write` {t}, `Verify` {t} (`run`: a top's first file started; its last file verified; at `commit`, a top holding no file) | `Write`, `Verify` |
 | `Begin`, `BeginRefused` (`commit`: the intent synced; a name taken) | `Begin` |
 | `Rename` {t}, `RenameRefused` {t}, `Stop` (`commit`, per top in order; a receiver that died in its commit: `end`) | `Rename`, `Stop` |
-| `Finish`, `Refuse` (before the stage's removal under its lock), `Cut` (`end`: the lock released before the commit) | `Finish`, `Refuse`, `Cut` |
+| `Finish` (before the stage's removal under its lock), `Cut` (`end`: the lock released before the commit) | `Finish`, `Cut` |
 | `Expire` (`finishStage`: a stale stage without its intent) | `Expire`; of a stage holding nothing, a stutter |
 | Resume `Init` {n} | N: the file's length in chunks of `maxData` bytes |
 | `Open` {part, off} (`run`, a start frame: the part on disk before the cut to the offset, as chunk digests; the offset in chunks) | `Open`; once verified, `Served` |
-| `Send` {i, v} (a chunk complete on disk), `Finish` {ok} (`verify`), `Cut` (the session ended inside the file) | `Send`, `Finish`, `Cut` |
-| hidden | Commit `Foreign`, `Replace` (someone else's names); Resume `Rot`, `Crash`, `Change` (taken only towards the next line), the sender's file `src` one whose chunk at each position was sent there |
+| `Send` {i, v} (a chunk verified and complete on disk), `Bad` {i, v} (a chunk that did not verify), `Finish` {ok} (`verify`), `Cut` (the session ended inside the file) | `Send`, `Bad`, `Finish`, `Cut` |
+| hidden | Commit `Foreign`, `Replace` (someone else's names); Resume `Rot`, `Crash`, `Change` (taken only towards the next line); the offer one whose chunk at each position was taken there, the sender's file `src` one whose chunk at each position was taken or refused there |
 
 Abstractions and limits: the tests run receivers and senders as goroutines
 of one process, and receivers meet only through the stage's lock, whose
@@ -168,7 +168,8 @@ files are not in Resume (its committed `<<>>` is "not committed").
 | mutant trace (`spec/traces/`) | the failure | invariant it protects |
 |---|---|---|
 | `mutant-commit-cut-resume` | a file finished after a clean end mid-file | Resume `Safe` |
-| `mutant-no-prefix-check-resume` | a resume from a part that is not the sender's prefix | Resume `Safe` |
+| `mutant-resume-unverified-resume` | a resume after a chunk that does not verify | Resume `Resumed` |
+| `mutant-accept-unverified-resume` | a chunk refused, then the same chunk written | Resume `Kept` |
 | `mutant-sweep-deletes-intent-commit` | the sweep removes a stage holding its intent | `Kept` |
 | `mutant-no-lock-commit` | a second receiver opens a held stage | `Intact` |
 | `mutant-finish-part-way-commit` | a commit finished with a top not in place | `Committed` |

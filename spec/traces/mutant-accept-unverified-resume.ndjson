@@ -1,0 +1,7 @@
+{"ev":"Init","n":2}
+{"ev":"Open","part":[],"off":0}
+{"ev":"Send","i":1,"v":"a"}
+{"ev":"Bad","i":2,"v":"c"}
+{"ev":"Open","part":["a"],"off":1}
+{"ev":"Send","i":2,"v":"c"}
+{"ev":"Finish","ok":true}
