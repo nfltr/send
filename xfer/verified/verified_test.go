@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/nfltr/blake3"
+	"github.com/nfltr/blake3/bao"
 )
 
 func file(t *testing.T, n int) ([]byte, Tree) {
@@ -105,5 +106,38 @@ func TestVerify(t *testing.T) {
 		if got, whole, err := c.tr.Verify(bytes.NewReader(c.data)); err != nil || got != c.want || whole != c.whole {
 			t.Errorf("%s: %d, %v, %v; want %d, %v", name, got, whole, err, c.want, c.whole)
 		}
+	}
+}
+
+// New builds the same root and outboard as bao.Encode on one core, for
+// sizes around the chunk (GroupSize), the hasher's 16 KiB buffer and the
+// subtree (power of two chunks) boundaries.
+func TestNewMatchesSequential(t *testing.T) {
+	var sizes []int
+	for _, base := range []int{0, 1 << 10, 16 << 10, GroupSize, 2 * GroupSize, 3 * GroupSize, 4 * GroupSize, 5 * GroupSize, 8 * GroupSize, 13*GroupSize + 16<<10} {
+		for _, d := range []int{-1025, -1024, -1, 0, 1, 1024, 1025} {
+			if base+d >= 0 {
+				sizes = append(sizes, base+d)
+			}
+		}
+	}
+	b := make([]byte, 13*GroupSize+16<<10+1025)
+	_, _ = rand.Read(b)
+	for _, n := range sizes {
+		tr, err := New(bytes.NewReader(b[:n]), int64(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := make([]byte, OutboardSize(int64(n)))
+		root, err := bao.Encode(at(want), bytes.NewReader(b[:n]), int64(n), Group, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tr.Root != root || !bytes.Equal(tr.Outboard, want) {
+			t.Fatalf("%d bytes: New differs from bao.Encode", n)
+		}
+	}
+	if _, err := New(bytes.NewReader(b[:GroupSize+1]), GroupSize+2); err == nil {
+		t.Fatal("a short read built a tree")
 	}
 }
