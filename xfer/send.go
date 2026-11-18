@@ -130,7 +130,7 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 	for _, p := range w.Parts {
 		parts[p.Index] = p
 	}
-	buf := make([]byte, maxData)
+	buf := make([]byte, 5+maxData) // a data frame: its header, then a chunk
 	for i, e := range s.Manifest.Entries {
 		if e.Dir {
 			continue
@@ -179,13 +179,18 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 			return 0, err
 		}
 	}
+	// The data frames go out one write each, header and chunk read in
+	// place, past the emptied buffer: no copy (docs/performance.md).
+	if err := c.flush(); err != nil {
+		return 0, err
+	}
 	var n int64
 	for n < e.Size-off {
-		k, err := io.ReadFull(readFile(f), buf[:min(int64(len(buf)), e.Size-off-n)])
+		k, err := io.ReadFull(readFile(f), buf[5:5+min(maxData, e.Size-off-n)])
 		if err != nil {
 			return n, fmt.Errorf("%s: %w (changed while being sent?)", e.Path, err)
 		}
-		if err := c.write(frameData, buf[:k]); err != nil {
+		if err := c.writeFrame(frameData, buf[:5+k]); err != nil {
 			return n, err
 		}
 		n += int64(k)

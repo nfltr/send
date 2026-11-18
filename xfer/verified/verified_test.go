@@ -71,29 +71,39 @@ func TestChunk(t *testing.T) {
 	}
 }
 
-// Prefix keeps whole verified chunks: up to a corrupted chunk, a cut
-// (truncated) one, or the end; nothing under the wrong root.
-func TestPrefix(t *testing.T) {
+// Verify keeps whole verified chunks: up to a corrupted chunk, a cut
+// (truncated) one, or the end; nothing under the wrong root; an empty file
+// only under the empty file's root.
+func TestVerify(t *testing.T) {
 	b, tr := file(t, 3*GroupSize+7)
 	other := tr
 	other.Root[0] ^= 1
 	bad := bytes.Clone(b)
 	bad[2*GroupSize+5] ^= 1
+	bad2 := bytes.Clone(bad)
+	bad2[GroupSize] ^= 1
+	_, none := file(t, 0)
+	noneWrong := none
+	noneWrong.Root[0] ^= 1
 	for name, c := range map[string]struct {
-		tr   Tree
-		data []byte
-		want int64
+		tr    Tree
+		data  []byte
+		want  int64
+		whole bool
 	}{
-		"whole":         {tr, b, int64(len(b))},
-		"longer":        {tr, append(bytes.Clone(b), 1, 2), int64(len(b))},
-		"truncated":     {tr, b[:2*GroupSize+100], 2 * GroupSize},
-		"chunk aligned": {tr, b[:GroupSize], GroupSize},
-		"corrupted":     {tr, bad, 2 * GroupSize},
-		"empty":         {tr, nil, 0},
-		"wrong root":    {other, b, 0},
+		"whole":             {tr, b, int64(len(b)), true},
+		"longer":            {tr, append(bytes.Clone(b), 1, 2), int64(len(b)), true},
+		"truncated":         {tr, b[:2*GroupSize+100], 2 * GroupSize, false},
+		"chunk aligned":     {tr, b[:GroupSize], GroupSize, false},
+		"corrupted":         {tr, bad, 2 * GroupSize, false},
+		"two corrupted":     {tr, bad2, GroupSize, false},
+		"empty part":        {tr, nil, 0, false},
+		"wrong root":        {other, b, 0, false},
+		"empty file":        {none, nil, 0, true},
+		"empty, wrong root": {noneWrong, nil, 0, false},
 	} {
-		if got, err := c.tr.Prefix(bytes.NewReader(c.data)); err != nil || got != c.want {
-			t.Errorf("%s: %d, %v; want %d", name, got, err, c.want)
+		if got, whole, err := c.tr.Verify(bytes.NewReader(c.data)); err != nil || got != c.want || whole != c.whole {
+			t.Errorf("%s: %d, %v, %v; want %d, %v", name, got, whole, err, c.want, c.whole)
 		}
 	}
 }

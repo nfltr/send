@@ -122,6 +122,16 @@ func (c *conn) write(t byte, p []byte) error {
 	return err
 }
 
+// writeFrame writes a frame whose payload is f[5:], f[:5] its header's
+// room: a whole data frame is larger than the write buffer, so an empty
+// buffer passes it on in one write.
+func (c *conn) writeFrame(t byte, f []byte) error {
+	f[0] = t
+	binary.BigEndian.PutUint32(f[1:5], uint32(len(f)-5)) // #nosec G115 -- callers bound len(f)
+	_, err := c.w.Write(f)
+	return err
+}
+
 func (c *conn) writeJSON(t byte, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {

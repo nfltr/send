@@ -721,7 +721,7 @@ func TestRenameKeepsANameThatAppeared(t *testing.T) {
 // first is cut, the next receive resumes from its stage (review 2026-11-17
 // #2, finding A; spec Commit.tla Open, mutant no-lock).
 func TestConcurrentReceiveOfAnOfferIsBusy(t *testing.T) {
-	src := tree(t, 1<<20)
+	src := tree(t, 4<<20) // more chunks than are in flight: the cut lands mid-file
 	s, err := NewSource([]string{src})
 	must(t, err)
 	dst := t.TempDir()
@@ -743,7 +743,7 @@ func TestConcurrentReceiveOfAnOfferIsBusy(t *testing.T) {
 		t.Fatal("the cut receive ended without an error")
 	}
 	sr, rr = session(t, s, dst, 0)
-	if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent >= 1<<20 {
+	if sr.err != nil || rr.err != nil || !rr.a.OK || sr.sent >= 4<<20 {
 		t.Fatalf("after the cut: sender %+v, receiver %+v; want ok, resumed", sr, rr)
 	}
 	if digest(t, filepath.Join(dst, "data")) != digest(t, src) {

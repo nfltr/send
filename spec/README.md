@@ -13,7 +13,13 @@ and ends the session (`Bad`). A session opens with the receiver verifying
 its part chunk by chunk with the tree it kept and resuming after a verified
 prefix (`Open`); at the end it verifies the whole file on its disk and
 commits it only when every chunk verifies, else keeps the verified prefix
-(`Finish`). `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
+(`Finish`). The code reads ahead: up to 8 chunks are verified at once while
+the next frames are read, but each is written (the model's `Send`) only
+after it verified and every chunk before it was written; a chunk read but
+not yet written when the session ends is not kept (the model's `Cut`
+then), and the first that does not verify ends the session with nothing
+after it written (`Bad`). The from-disk check verifies the chunks in
+parallel; it keeps the longest prefix whose every chunk verifies. `make spec` (TLC 1.8.0, fetched by `scripts/fetch-tla.sh`; or `spec/check.sh` with `TLA_JAVA`, `TLA_JAR`) runs the model
 with `-coverage 1`, each witness (must be violated) and each mutant (must
 be caught). N = 3 chunks, two chunk values, two faults: 3832 states.
 
@@ -112,9 +118,9 @@ receivers, two faults: 1250 states.
 
 | spec | code |
 |---|---|
-| `Open` (the part verified with its kept tree, the offset) | `xfer/receive.go` `parts`, `treeName`, `open`; `xfer/send.go` `sendFile`; `xfer/verified` `Prefix` |
-| `Send`, `Bad` (a chunk verified on arrival, or refused) | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameTree, frameData, `ErrUnverified`); `xfer/verified` `Chunk` |
-| `Finish` (the BLAKE3 over what is on disk, cut to the verified prefix on mismatch) | `xfer/receive.go` `verify`, `commit`; `xfer/verified` `Sum`, `Prefix` |
+| `Open` (the part verified with its kept tree, the offset) | `xfer/receive.go` `parts`, `treeName`, `open`; `xfer/send.go` `sendFile`; `xfer/verified` `Verify` |
+| `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `xfer/verified` `Chunk` |
+| `Finish` (every chunk on disk verified, cut to the verified prefix on mismatch) | `xfer/receive.go` `verify`, `commit`; `xfer/verified` `Verify` |
 | `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
 | `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
 | `Change` | the sender's disk; `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |

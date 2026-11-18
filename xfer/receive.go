@@ -353,7 +353,7 @@ func (r *receiver) parts() ([]Part, error) {
 		if err != nil {
 			return nil, err
 		}
-		n, err := verified.Tree{Root: root(e), Size: e.Size, Outboard: ob}.Prefix(f)
+		n, _, err := verified.Tree{Root: root(e), Size: e.Size, Outboard: ob}.Verify(f)
 		_ = f.Close()
 		if err != nil {
 			return nil, err
@@ -366,17 +366,22 @@ func (r *receiver) parts() ([]Part, error) {
 }
 
 // run takes the files, each chunk verified on arrival against the
-// manifest's root and written only then (spec Send; one that does not
-// verify ends the session, Bad), verifies each file from disk, and commits
-// the whole offer once every file is verified (spec Finish).
+// manifest's root and written only then, in order (spec Send; one that
+// does not verify ends the session, Bad, nothing after it written),
+// verifies each file from disk, and commits the whole offer once every
+// file is verified (spec Finish). Up to inFlight chunks are verified at
+// once while the next frames are read (docs/performance.md); a chunk not
+// yet written when the session ends is not kept (spec Cut).
 func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error) {
 	var (
 		buf     []byte
 		f       *os.File
 		cur     = -1 // the entry being received
 		left    int64
-		off     int64         // its next byte
+		off     int64         // its next byte read
 		tr      verified.Tree // its tree
+		q       []pending     // its chunks read, oldest first, not yet written
+		free    [][]byte      // their buffers, for the next
 		next    int           // entries before it are done
 		written int64
 		a       Answer
@@ -398,9 +403,42 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 		}
 		return Answer{}, fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)
 	}
+	// keep writes the oldest pending chunk once it verified, or ends the
+	// session at it (Bad).
+	keep := func() error {
+		pd := q[0]
+		q = q[1:]
+		if !<-pd.ok {
+			if traceOn {
+				r.trBad(pd.p)
+			}
+			_ = f.Close()
+			f = nil
+			return fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, pd.off, ErrUnverified)
+		}
+		if _, err := f.Write(pd.p); err != nil {
+			_ = f.Close()
+			f = nil
+			return err
+		}
+		if afterWrite != nil {
+			afterWrite(f, pd.off)
+		}
+		if traceOn {
+			r.trData(pd.p)
+		}
+		free = append(free, pd.p)
+		written += int64(len(pd.p))
+		if progress != nil {
+			progress(written)
+		}
+		return nil
+	}
 	for {
 		t, p, err := c.read(buf)
-		if err != nil {
+		if err != nil { // a cut: the chunks read that verify are kept
+			for len(q) > 0 && keep() == nil {
+			}
 			if f != nil {
 				_ = f.Close()
 			}
@@ -441,34 +479,31 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			if f == nil || len(tr.Outboard) != verified.OutboardSize(tr.Size) || int64(len(p)) > left {
 				return fail("data before the tree or past the end of entry %d", cur)
 			}
-			if !tr.Chunk(p, off) {
-				if traceOn {
-					r.trBad(p)
+			if len(q) == inFlight {
+				if err := keep(); err != nil {
+					return Answer{}, err
 				}
-				_ = f.Close()
-				f = nil
-				return Answer{}, fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, off, ErrUnverified)
 			}
-			if _, err := f.Write(p); err != nil {
-				_ = f.Close()
-				return Answer{}, err
+			// p is read into buf: it becomes the chunk's, the next frame is
+			// read into a free buffer (no copy; docs/performance.md).
+			buf = nil
+			if n := len(free); n > 0 {
+				buf, free = free[n-1][:0], free[:n-1]
 			}
-			if afterWrite != nil {
-				afterWrite(f, off)
-			}
-			if traceOn {
-				r.trData(p)
-			}
+			pd, t := pending{p: p, off: off, ok: make(chan bool, 1)}, tr
+			go func() { pd.ok <- t.Chunk(pd.p, pd.off) }()
+			q = append(q, pd)
 			left -= int64(len(p))
 			off += int64(len(p))
-			written += int64(len(p))
-			if progress != nil {
-				progress(written)
-			}
 		case frameEnd:
 			var e end
 			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 || len(tr.Outboard) != verified.OutboardSize(tr.Size) {
 				return fail("end of entry %d", cur)
+			}
+			for len(q) > 0 {
+				if err := keep(); err != nil {
+					return Answer{}, err
+				}
 			}
 			err := f.Sync() // on stable storage before it can be committed
 			if cerr := f.Close(); err == nil {
@@ -503,6 +538,15 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 	}
 }
 
+// inFlight bounds the chunks read and being verified, not yet written.
+const inFlight = 8
+
+type pending struct {
+	p   []byte
+	off int64
+	ok  chan bool
+}
+
 // afterWrite, when set, runs after each chunk is written (a test lands one
 // wrong).
 var afterWrite func(f *os.File, off int64)
@@ -528,26 +572,21 @@ func (r *receiver) open(e Entry, off int64) (*os.File, error) {
 	return f, nil
 }
 
-// verify compares the BLAKE3 of what is on disk with the root; a file
-// that differs (a chunk that landed wrong) is cut to its verified prefix,
-// which the next session resumes from (spec Finish).
+// verify checks every chunk of what is on disk against the root, in
+// parallel (verified.Verify); a file that does not verify (a chunk that
+// landed wrong) is cut to its verified prefix, which the next session
+// resumes from (spec Finish).
 func (r *receiver) verify(e Entry, tr verified.Tree) error {
 	f, err := r.sr.OpenFile(e.Path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck
-	if sum, err := verified.Sum(f); err != nil || sum == tr.Root {
+	n, whole, err := tr.Verify(f)
+	if err != nil || whole {
 		return err
 	}
-	n, err := f.Seek(0, io.SeekStart)
-	if err == nil {
-		n, err = tr.Prefix(f)
-	}
-	if err == nil {
-		err = f.Truncate(n)
-	}
-	if err != nil {
+	if err := f.Truncate(n); err != nil {
 		return err
 	}
 	return fmt.Errorf("%q: what landed is %w after %d bytes; the next session resumes there", e.Path, ErrUnverified, n)

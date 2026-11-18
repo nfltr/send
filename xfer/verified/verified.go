@@ -16,6 +16,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"lukechampine.com/blake3"
 	"lukechampine.com/blake3/bao"
@@ -71,26 +74,49 @@ func (t Tree) Chunk(p []byte, off int64) bool {
 		bao.VerifyChunk(p, t.Outboard, Group, uint64(off), t.Root) // #nosec G115 -- off >= 0
 }
 
-// Prefix is the length of r's longest prefix, in whole chunks (or the
-// whole file), whose every chunk verifies; it reads at most t.Size bytes.
-func (t Tree) Prefix(r io.Reader) (int64, error) {
-	buf := make([]byte, GroupSize)
-	var off int64
-	for off < t.Size {
-		n, err := io.ReadFull(r, buf[:min(GroupSize, t.Size-off)])
-		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-			return off, nil
-		}
-		if err != nil {
-			return off, err
-		}
-		if !t.Chunk(buf[:n], off) {
-			return off, nil
-		}
-		off += int64(n)
+// Verify checks r's chunks against the root through the outboard, each
+// GroupSize chunk on its own, GOMAXPROCS at a time (one core hashes a
+// chunk at a fraction of the disk's speed; docs/performance.md). It
+// returns the length of r's longest prefix of whole chunks (or the whole
+// file) whose every chunk verifies, and whether that is the whole file;
+// it reads at most t.Size bytes.
+func (t Tree) Verify(r io.ReaderAt) (n int64, whole bool, err error) {
+	if !t.Valid() {
+		return 0, false, nil
 	}
-	return off, nil
+	chunks := (t.Size + GroupSize - 1) / GroupSize
+	var next, bad atomic.Int64 // the next chunk to check; the first that did not verify
+	bad.Store(chunks)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range min(int64(runtime.GOMAXPROCS(0)), chunks) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, GroupSize)
+			for i := next.Add(1) - 1; i < min(chunks, bad.Load()); i = next.Add(1) - 1 {
+				off := i * GroupSize
+				p := buf[:min(GroupSize, t.Size-off)]
+				k, rerr := r.ReadAt(p, off)
+				if k == len(p) && t.Chunk(p, off) {
+					continue
+				}
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					mu.Lock()
+					err = rerr
+					mu.Unlock()
+				}
+				for b := bad.Load(); i < b && !bad.CompareAndSwap(b, i); b = bad.Load() {
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	b := bad.Load()
+	return min(b*GroupSize, t.Size), b == chunks && (t.Size > 0 || t.Root == empty), err
 }
+
+var empty = blake3.Sum256(nil)
 
 // Sum is the BLAKE3 hash of r: a whole file's root. It writes 4 MiB at a
 // time: the hasher spreads a large write over the cores (io.Copy's 32 KiB

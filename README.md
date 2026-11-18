@@ -24,8 +24,9 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
   verifies every 256 KiB chunk against the root as it arrives and writes
   only one that verifies; a chunk that does not (a file changed since it
   was offered) ends the session at once, the verified chunks kept. Nothing
-  lands in the receiving directory until every file's BLAKE3 over what is
-  on the receiver's disk is its root.
+  lands in the receiving directory until every chunk on the receiver's
+  disk verifies against its file's root (checked in parallel; throughput
+  notes: [`docs/performance.md`](docs/performance.md)).
   A name that already exists there refuses the transfer.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory beside it, with each file's hash tree); the
