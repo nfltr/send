@@ -3,8 +3,8 @@ module github.com/nfltr/send
 go 1.27.2
 
 require (
-	github.com/nfltr/relay-core v0.15.0
-	github.com/nfltr/relay/client v0.22.4
+	github.com/nfltr/relay-core v0.16.0
+	github.com/nfltr/relay/client v0.23.0
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.48.0
 	lukechampine.com/blake3 v1.4.1
@@ -28,7 +28,7 @@ require (
 	github.com/nfltr/link v0.12.16 // indirect
 	github.com/nfltr/link/peerlink/quiclink v0.5.23 // indirect
 	github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261112202211-40e0a2570e52 // indirect
-	github.com/nfltr/relay/proto v0.20.3 // indirect
+	github.com/nfltr/relay/proto v0.21.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
