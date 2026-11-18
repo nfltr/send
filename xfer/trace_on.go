@@ -265,6 +265,16 @@ func (r *receiver) trData(p []byte) {
 	}
 }
 
+// trBad: a chunk that does not verify, refused (Resume Bad).
+func (r *receiver) trBad(p []byte) {
+	if r.tr.st == nil || r.tr.st.files[r.tr.cur] == nil {
+		return
+	}
+	ft, h := r.tr.st.files[r.tr.cur], sha256.New()
+	h.Write(p)
+	r.tr.st.emit(ft.f, map[string]any{"ev": "Bad", "i": chunks(ft.off) + 1, "v": chunk(h)})
+}
+
 // trVerified: a file's digest over what is on disk compared (Resume
 // Finish); its top's last file verified is Commit Verify.
 func (r *receiver) trVerified(ok bool) {
@@ -348,7 +358,7 @@ func (r *receiver) trPend(ev string, t int) {
 	}
 }
 
-// trCommit: Finish or Refuse, written before the stage's removal under its
+// trCommit: Finish, written before the stage's removal under its
 // lock (the caller holds traceMu across both).
 func (r *receiver) trCommit(ev string, t int) {
 	if r.tr.st == nil {

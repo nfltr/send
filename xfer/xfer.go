@@ -6,51 +6,55 @@
 // authenticates every byte). The receiver pulls; the sender answers:
 //
 //  1. sender: manifest (the entries: paths, sizes, modes, mtimes, and each
-//     file's SHA-256, taken when it was offered);
-//  2. receiver: want (per file it holds a part of: the part's length and
-//     SHA-256);
+//     file's BLAKE3 root, taken when it was offered);
+//  2. receiver: want (per file it holds a part of: the length of the
+//     part's prefix that verifies against the root, in whole chunks);
 //  3. sender, per file in manifest order: start (the offset it sends
-//     from: the part's length when that part is a prefix of its file,
-//     else 0), data, end; it ends the session (ErrChanged) instead of
-//     sending end when the bytes it sent are not the manifest's SHA-256;
-//     then done;
-//  4. receiver: answer. It commits (renames into place) only after every
-//     file's SHA-256 over what is on its disk equals the manifest's, so a cut
-//     session leaves nothing in place, only the parts it resumes from.
+//     from: the want's, else 0), tree (the file's Bao outboard,
+//     package verified), data (one chunk per frame), end; then done;
+//  4. receiver: answer. It verifies each chunk on arrival against the
+//     manifest's root and writes only one that verifies (a chunk that does
+//     not ends the session, ErrUnverified, the verified part kept); it
+//     commits (renames into place) only after every file's BLAKE3 over
+//     what is on its disk is the manifest's root, so a cut session leaves
+//     nothing in place, only the verified parts it resumes from.
 //
-// The resume rules are spec/Resume.tla's (Open, Send, Finish); the
+// The resume rules are spec/Resume.tla's (Open, Send, Bad, Finish); the
 // mutants there are the failures they prevent.
 package xfer
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/nfltr/send/xfer/verified"
 )
 
 // Version is the protocol's, in the manifest.
-const Version = 2
+const Version = 3
 
 // Frame types.
 const (
 	frameManifest = 'M'
 	frameWant     = 'W'
 	frameStart    = 'F'
+	frameTree     = 'T'
 	frameData     = 'D'
 	frameEnd      = 'E'
 	frameDone     = 'Z'
 	frameAnswer   = 'A'
 )
 
-// Bounds: a data frame's payload, a control frame's.
+// Bounds: a data or tree frame's payload (a data frame is one verified
+// chunk), a control frame's.
 const (
-	maxData    = 256 << 10
+	maxData    = verified.GroupSize
 	maxControl = 16 << 20
+	maxSize    = 1 << 50 // a file's
 )
 
 // Entry is one manifest entry: a directory or a regular file, path
@@ -61,7 +65,7 @@ type Entry struct {
 	Size   int64  `json:"size,omitempty"`
 	Mode   uint32 `json:"mode"`
 	MTime  int64  `json:"mtime,omitempty"`  // Unix nanoseconds
-	SHA256 string `json:"sha256,omitempty"` // a file's, when it was offered
+	BLAKE3 string `json:"blake3,omitempty"` // a file's root, when it was offered
 }
 
 // Manifest is what a sender offers.
@@ -70,11 +74,10 @@ type Manifest struct {
 	Entries []Entry `json:"entries"`
 }
 
-// Part is a file the receiver holds a part of.
+// Part is a file the receiver holds a verified part of.
 type Part struct {
-	Index  int    `json:"i"`
-	Offset int64  `json:"offset"`
-	SHA256 string `json:"sha256"` // of the part's Offset bytes
+	Index  int   `json:"i"`
+	Offset int64 `json:"offset"`
 }
 
 type want struct {
@@ -96,7 +99,6 @@ type Answer struct {
 	Message string `json:"message,omitempty"`
 	Files   int    `json:"files"`
 	Bytes   int64  `json:"bytes"`
-	keep    bool   // a commit that failed after verification: the stage stays
 }
 
 // conn frames one session.
@@ -156,7 +158,7 @@ func (c *conn) read(buf []byte) (byte, []byte, error) {
 	}
 	n := binary.BigEndian.Uint32(h[1:])
 	limit := uint32(maxControl)
-	if h[0] == frameData {
+	if h[0] == frameData || h[0] == frameTree {
 		limit = maxData
 	}
 	if n > limit {
@@ -190,19 +192,4 @@ func noEOF(err error) error {
 		return io.ErrUnexpectedEOF
 	}
 	return err
-}
-
-func hexSum(h interface{ Sum([]byte) []byte }) string { return hex.EncodeToString(h.Sum(nil)) }
-
-// prefixSum is the SHA-256 of r's first n bytes, or "" when r is shorter.
-func prefixSum(r io.Reader, n int64) (string, error) {
-	h := sha256.New()
-	m, err := io.CopyN(h, r, n)
-	if errors.Is(err, io.EOF) && m < n {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return hexSum(h), nil
 }

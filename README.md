@@ -18,15 +18,20 @@ received 2 files, 1073741829 bytes in 4.1 s (262 MB/s), path direct
 - **Direct first.** Both ends try a direct path (QUIC, hole punched with
   the relay's help) and move the session to it when it works; the relay
   carries the session until then and whenever the direct path dies.
-- **Verified.** Nothing lands in the receiving directory until every
-  file's SHA-256 over what is on the receiver's disk equals the one the
-  sender offered (taken when it started serving; a file changed since is
-  refused).
+- **Verified.** A file is its BLAKE3 root, taken when the sender started
+  serving and pinned by the offer. The sender serves each file as a
+  verified stream (Bao, its hash tree sent ahead of the data): the receiver
+  verifies every 256 KiB chunk against the root as it arrives and writes
+  only one that verifies; a chunk that does not (a file changed since it
+  was offered) ends the session at once, the verified chunks kept. Nothing
+  lands in the receiving directory until every file's BLAKE3 over what is
+  on the receiver's disk is its root.
   A name that already exists there refuses the transfer.
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
-  `.nfltr-send-*` directory beside it); the receiver resumes by itself, and
-  the next `receive` of the same offer resumes from there. Only what is
-  missing is sent again. A refused transfer keeps nothing; a stage
+  `.nfltr-send-*` directory beside it, with each file's hash tree); the
+  receiver resumes by itself, and the next `receive` of the same offer
+  resumes from there: each kept part is verified chunk by chunk against the
+  root, and only what is missing or does not verify is sent again. A refused transfer keeps nothing; a stage
   nobody wrote to for 7 days is an abandoned offer's, and the next
   `receive` into that directory removes it, or, when that offer's commit
   had begun (a receiver that died while moving its entries into place),

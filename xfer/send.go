@@ -4,7 +4,7 @@
 package xfer
 
 import (
-	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,20 +12,23 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/nfltr/send/xfer/verified"
 )
 
 // Source is what a sender serves: the manifest of its paths and where each
 // file entry is on disk.
 type Source struct {
 	Manifest Manifest
-	files    map[int]string // entry index -> path on disk
+	files    map[int]string        // entry index -> path on disk
+	trees    map[int]verified.Tree // entry index -> its tree
 }
 
 // NewSource walks paths (each sent under its base name) into a Source.
 // Only regular files and directories are sent; anything else, or two
 // paths with one base name, is refused before anything is served.
 func NewSource(paths []string) (*Source, error) {
-	s := &Source{Manifest: Manifest{Version: Version}, files: map[int]string{}}
+	s := &Source{Manifest: Manifest{Version: Version}, files: map[int]string{}, trees: map[int]verified.Tree{}}
 	seen := map[string]bool{}
 	for _, p := range paths {
 		p = filepath.Clean(p)
@@ -56,10 +59,13 @@ func NewSource(paths []string) (*Source, error) {
 			e := Entry{Path: filepath.ToSlash(rel), Dir: d.IsDir(), Mode: uint32(fi.Mode().Perm())}
 			if !e.Dir {
 				e.Size, e.MTime = fi.Size(), fi.ModTime().UnixNano()
-				if e.SHA256, err = fileSum(q, e); err != nil {
+				t, err := fileTree(q, e)
+				if err != nil {
 					return err
 				}
+				e.BLAKE3 = hex.EncodeToString(t.Root[:])
 				s.files[len(s.Manifest.Entries)] = q
+				s.trees[len(s.Manifest.Entries)] = t
 			}
 			s.Manifest.Entries = append(s.Manifest.Entries, e)
 			return nil
@@ -71,19 +77,19 @@ func NewSource(paths []string) (*Source, error) {
 	return s, nil
 }
 
-// fileSum is the SHA-256 of the file at q, refused when it is not e's size
+// fileTree is the tree of the file at q, refused when it is not e's size
 // and mtime after the read.
-func fileSum(q string, e Entry) (string, error) {
+func fileTree(q string, e Entry) (verified.Tree, error) {
 	f, err := os.Open(q) // #nosec G304 -- a file the user offered
 	if err != nil {
-		return "", err
+		return verified.Tree{}, err
 	}
 	defer f.Close() //nolint:errcheck
-	sum, err := prefixSum(f, e.Size)
+	t, err := verified.New(f, e.Size)
 	if err == nil {
 		err = unchanged(f, e)
 	}
-	return sum, err
+	return t, err
 }
 
 // Files and Bytes count the source's file entries and their bytes.
@@ -145,9 +151,10 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 	return a, sent, err
 }
 
-// sendFile sends entry i from the part's offset when the part is a prefix
-// of the file (spec Open), else from 0, then its end, only when the bytes
-// it sent are the offered ones.
+// sendFile sends entry i from the part's offset when it is a chunk
+// boundary inside the file (the receiver verified the part before it;
+// spec Open), else from 0: its tree, its chunks, then its end. The receiver
+// verifies each chunk against the manifest's root (spec Send, Bad).
 func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, error) {
 	f, err := os.Open(s.files[i])
 	if err != nil {
@@ -157,24 +164,20 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	if err := unchanged(f, e); err != nil {
 		return 0, err
 	}
-	h := sha256.New()
 	var off int64
-	if p.Offset > 0 && p.Offset <= e.Size {
-		got, err := prefixSum(io.TeeReader(io.LimitReader(readFile(f), p.Offset), h), p.Offset)
-		if err != nil {
-			return 0, err
-		}
-		if got == p.SHA256 {
-			off = p.Offset
-		} else { // not a prefix: from 0
-			h.Reset()
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				return 0, err
-			}
-		}
+	if p.Offset > 0 && p.Offset <= e.Size && (p.Offset%maxData == 0 || p.Offset == e.Size) {
+		off = p.Offset
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return 0, err
 	}
 	if err := c.writeJSON(frameStart, start{Index: i, Offset: off}); err != nil {
 		return 0, err
+	}
+	for t := s.trees[i].Outboard; len(t) > 0; t = t[min(len(t), maxData):] {
+		if err := c.write(frameTree, t[:min(len(t), maxData)]); err != nil {
+			return 0, err
+		}
 	}
 	var n int64
 	for n < e.Size-off {
@@ -182,7 +185,6 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 		if err != nil {
 			return n, fmt.Errorf("%s: %w (changed while being sent?)", e.Path, err)
 		}
-		h.Write(buf[:k])
 		if err := c.write(frameData, buf[:k]); err != nil {
 			return n, err
 		}
@@ -190,11 +192,6 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 	}
 	if err := unchanged(f, e); err != nil {
 		return n, err
-	}
-	// Size and mtime miss a rewrite in place that restores them: the bytes
-	// sent must be the offered ones (review 2026-11-17, F2).
-	if hexSum(h) != e.SHA256 {
-		return n, fmt.Errorf("%s: its bytes %w", e.Path, ErrChanged)
 	}
 	return n, c.writeJSON(frameEnd, end{Index: i})
 }

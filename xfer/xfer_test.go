@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nfltr/send/xfer/verified"
 )
 
 // tree makes src/data (a directory: a file of n random bytes, a small
@@ -160,7 +162,7 @@ func TestCutTransferResumes(t *testing.T) {
 	s, err := NewSource([]string{src})
 	must(t, err)
 	frame := func(v any) int64 { b, _ := json.Marshal(v); return 5 + int64(len(b)) }
-	afterBig := frame(s.Manifest) + frame(start{Index: 1}) + 16*(5+maxData) + frame(end{Index: 1})
+	afterBig := frame(s.Manifest) + frame(start{Index: 1}) + 5 + int64(verified.OutboardSize(4<<20)) + 16*(5+maxData) + frame(end{Index: 1})
 	for _, cut := range []int64{1 << 20, afterBig} { // inside big.bin; right after its end frame
 		dst := t.TempDir()
 		_, rr := session(t, s, dst, cut)
@@ -180,43 +182,95 @@ func TestCutTransferResumes(t *testing.T) {
 	}
 }
 
-// A part that is not a prefix of the sender's file (a torn write, another
-// file) is sent again from 0 (spec Open: the prefix check).
-func TestResumeOfAForeignPartStartsOver(t *testing.T) {
+// A part is verified chunk by chunk before it is resumed: a corrupted
+// chunk (a torn write, another program) is sent again with every chunk
+// after it, the chunks before it are kept (spec Open, mutant
+// resume-unverified).
+func TestResumeOfACorruptedPartKeepsItsVerifiedChunks(t *testing.T) {
 	src := tree(t, 2<<20)
 	s, err := NewSource([]string{src})
 	must(t, err)
-	dst := t.TempDir()
-	_, _ = session(t, s, dst, 1<<20)
-	stage := filepath.Join(dst, names(t, dst)[0])
-	part := filepath.Join(stage, "data", "big.bin")
-	b, err := os.ReadFile(part)
+	for _, at := range []int{10, 2*maxData + 10} {
+		dst := t.TempDir()
+		_, _ = session(t, s, dst, 1<<20)
+		stage := filepath.Join(dst, names(t, dst)[0])
+		part := filepath.Join(stage, "data", "big.bin")
+		b, err := os.ReadFile(part)
+		must(t, err)
+		b[at] ^= 0xff
+		must(t, os.WriteFile(part, b, 0o600))
+		sr, rr := session(t, s, dst, 0)
+		if want := int64(2<<20 + 5 - at/maxData*maxData); rr.err != nil || !rr.a.OK || sr.sent != want {
+			t.Fatalf("corrupted at %d: sender %+v, receiver %+v, want %d bytes sent", at, sr, rr, want)
+		}
+		if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+			t.Fatal("differs from the source")
+		}
+	}
+}
+
+// corrupter flips one byte of what the sender writes, at stream offset at.
+type corrupter struct {
+	net.Conn
+	at int64
+}
+
+func (c *corrupter) Write(p []byte) (int, error) {
+	if 0 <= c.at && c.at < int64(len(p)) {
+		p = bytes.Clone(p)
+		p[c.at] ^= 1
+	}
+	c.at -= int64(len(p))
+	return c.Conn.Write(p)
+}
+
+// A chunk that does not verify against the manifest's root is refused at
+// once: the session ends (ErrUnverified), the chunks verified before it
+// stay, nothing is committed, and the next session resumes after them
+// (spec Bad, Kept; mutant accept-unverified).
+func TestUnverifiedChunkIsRefused(t *testing.T) {
+	src := tree(t, 4<<20)
+	s, err := NewSource([]string{src})
 	must(t, err)
-	b[10] ^= 0xff
-	must(t, os.WriteFile(part, b, 0o600))
+	frame := func(v any) int64 { b, _ := json.Marshal(v); return 5 + int64(len(b)) }
+	chunk3 := frame(s.Manifest) + frame(start{Index: 1}) + 5 + int64(verified.OutboardSize(4<<20)) + 2*(5+maxData) + 5 + 100
+	dst := t.TempDir()
+	x, y := net.Pipe()
+	go func() { _, _, _ = s.Serve(&corrupter{Conn: x, at: chunk3}); _ = x.Close() }()
+	a, err := Receive(y, dst, nil)
+	_ = y.Close()
+	if !errors.Is(err, ErrUnverified) || a.OK {
+		t.Fatalf("receiver %+v, %v: want ErrUnverified", a, err)
+	}
+	part := filepath.Join(dst, names(t, dst)[0], "data", "big.bin")
+	if fi, err := os.Stat(part); err != nil || fi.Size() != 2*maxData {
+		t.Fatalf("part %v, %v: want the two chunks before the refused one", fi, err)
+	}
 	sr, rr := session(t, s, dst, 0)
-	if rr.err != nil || !rr.a.OK || sr.sent != 2<<20+5 {
-		t.Fatalf("sender %+v, receiver %+v, want the whole file sent again", sr, rr)
+	if rr.err != nil || !rr.a.OK || sr.sent != 4<<20+5-2*maxData {
+		t.Fatalf("resumed: sender %+v, receiver %+v", sr, rr)
 	}
 	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
 		t.Fatal("differs from the source")
 	}
 }
 
-// The receiver's digest over what is on its disk must equal the manifest's:
-// a file whose bytes differ refuses the transfer and nothing is committed
-// (spec Finish, mutant no-final-check); a refused transfer is not resumed,
-// so its stage is removed (spec Crash to an empty part).
-func TestDigestMismatchCommitsNothing(t *testing.T) {
+// A manifest's root that the sender's bytes do not match (a sender
+// whose file is not the offered one) refuses the first chunk: nothing is
+// written, nothing committed (spec Bad, mutant root-unbound: the root is
+// the pinned manifest's, not the tree the session carries).
+func TestWrongRootCommitsNothing(t *testing.T) {
 	dst := t.TempDir()
+	tr, _ := verified.New(strings.NewReader("abc"), 3)
 	a, b := net.Pipe()
 	go func() {
 		c := newConn(a)
-		_ = c.writeJSON(frameManifest, Manifest{Version: Version, Entries: []Entry{{Path: "f", Size: 3, Mode: 0o644, SHA256: strings.Repeat("0", 64)}}})
+		_ = c.writeJSON(frameManifest, Manifest{Version: Version, Entries: []Entry{{Path: "f", Size: 3, Mode: 0o644, BLAKE3: strings.Repeat("0", 64)}}})
 		_ = c.flush()
 		var w want
 		_ = c.readJSON(frameWant, &w)
 		_ = c.writeJSON(frameStart, start{Index: 0})
+		_ = c.write(frameTree, tr.Outboard)
 		_ = c.write(frameData, []byte("abc"))
 		_ = c.writeJSON(frameEnd, end{Index: 0})
 		_ = c.write(frameDone, nil)
@@ -225,11 +279,48 @@ func TestDigestMismatchCommitsNothing(t *testing.T) {
 	}()
 	ans, err := Receive(b, dst, nil)
 	_ = b.Close()
-	if err != nil || ans.OK || !strings.Contains(ans.Message, "SHA-256") {
-		t.Fatalf("answer %+v, %v: want a refused digest", ans, err)
+	if !errors.Is(err, ErrUnverified) || ans.OK {
+		t.Fatalf("answer %+v, %v: want ErrUnverified", ans, err)
 	}
-	if got := names(t, dst); len(got) != 0 {
-		t.Fatalf("dst holds %q, want nothing (the refused transfer's stage removed)", got)
+	got := names(t, dst)
+	if len(got) != 1 || !strings.HasPrefix(got[0], StagePrefix) {
+		t.Fatalf("dst holds %q, want only the stage", got)
+	}
+	if fi, err := os.Stat(filepath.Join(dst, got[0], "f")); err != nil || fi.Size() != 0 {
+		t.Fatalf("part %v, %v: want nothing written", fi, err)
+	}
+}
+
+// A chunk that lands wrong on the receiver's disk after it verified is
+// caught by the file's BLAKE3 over what is on disk: nothing is committed,
+// the file is cut to its verified chunks and the next session resumes
+// there (spec Finish, mutant no-final-check).
+func TestChunkThatLandedWrongIsCaught(t *testing.T) {
+	src := tree(t, 2<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	var stage string
+	afterWrite = func(f *os.File, off int64) {
+		if off == maxData { // the second chunk lands wrong
+			_, _ = f.WriteAt([]byte{0xff, 0xfe}, off+7)
+			stage = filepath.Dir(filepath.Dir(f.Name()))
+		}
+	}
+	_, rr := session(t, s, dst, 0)
+	afterWrite = nil
+	if !errors.Is(rr.err, ErrUnverified) || rr.a.OK {
+		t.Fatalf("receiver %+v: want ErrUnverified", rr)
+	}
+	if fi, err := os.Stat(filepath.Join(stage, "data", "big.bin")); err != nil || fi.Size() != maxData {
+		t.Fatalf("part %v, %v: want the first chunk only", fi, err)
+	}
+	sr, rr := session(t, s, dst, 0)
+	if rr.err != nil || !rr.a.OK || sr.sent != 2<<20+5-maxData {
+		t.Fatalf("resumed: sender %+v, receiver %+v", sr, rr)
+	}
+	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+		t.Fatal("differs from the source")
 	}
 }
 
@@ -275,12 +366,13 @@ func TestReceiverRefusesUnsafeOffers(t *testing.T) {
 		"taken":      {{Path: "taken", Size: 1}},
 		"twice":      {{Path: "x", Size: 1}, {Path: "x", Size: 1}},
 		"negative":   {{Path: "x", Size: -1}},
+		"huge":       {{Path: "x", Size: 1<<50 + 1}},
 		"no-digest":  {{Path: "x", Size: 1}},
-		"bad-digest": {{Path: "x", Size: 1, SHA256: "00"}},
+		"bad-digest": {{Path: "x", Size: 1, BLAKE3: "00"}},
 	} {
-		for i := range es { // a valid digest, so each is refused for its own reason
-			if es[i].SHA256 == "" && name != "no-digest" {
-				es[i].SHA256 = strings.Repeat("0", 64)
+		for i := range es { // a valid root, so each is refused for its own reason
+			if es[i].BLAKE3 == "" && name != "no-digest" {
+				es[i].BLAKE3 = strings.Repeat("0", 64)
 			}
 		}
 		a, b := net.Pipe()
@@ -424,8 +516,9 @@ func (w *rewriter) Write(p []byte) (int, error) {
 }
 
 // A file rewritten in place while it is sent, its size and mtime
-// restored, is refused (ErrChanged) rather than sent mixed (review
-// 2026-11-17, finding F2).
+// restored, is refused by the receiver at its first chunk that is not the
+// offered one (ErrUnverified) rather than landed mixed (review
+// 2026-11-17, finding F2; spec Change, Bad).
 func TestSenderRefusesAFileRewrittenWhileSent(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "f.bin")
 	b := make([]byte, 4<<20)
@@ -441,10 +534,10 @@ func TestSenderRefusesAFileRewrittenWhileSent(t *testing.T) {
 		_ = x.Close()
 		errc <- err
 	}()
-	a, _ := Receive(y, dst, nil)
+	a, rerr := Receive(y, dst, nil)
 	_ = y.Close()
-	if err := <-errc; !errors.Is(err, ErrChanged) || a.OK {
-		t.Fatalf("sender %v, receiver %+v: want ErrChanged and nothing committed", err, a)
+	if err := <-errc; err == nil || !errors.Is(rerr, ErrUnverified) || a.OK {
+		t.Fatalf("sender %v, receiver %+v, %v: want ErrUnverified and nothing committed", err, a, rerr)
 	}
 	if _, err := os.Lstat(filepath.Join(dst, "f.bin")); err == nil {
 		t.Fatal("a file changed while sent landed")
@@ -514,8 +607,9 @@ func (c countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// A session reads each file once: the manifest carries its digest (taken
-// when it was offered), and the bytes served are checked against it.
+// A session reads each file once: the manifest carries its root and the
+// sender its tree (taken when it was offered); the receiver checks the
+// bytes served against them.
 func TestServeReadsEachFileOnce(t *testing.T) {
 	src := tree(t, 1<<20)
 	s, err := NewSource([]string{src})
@@ -531,7 +625,7 @@ func TestServeReadsEachFileOnce(t *testing.T) {
 		t.Fatalf("read %d bytes of files for %d", n, 1<<20+5)
 	}
 	for _, e := range s.Manifest.Entries {
-		if !e.Dir && len(e.SHA256) != 64 {
+		if !e.Dir && len(e.BLAKE3) != 64 {
 			t.Fatalf("%s: no digest in the manifest", e.Path)
 		}
 	}

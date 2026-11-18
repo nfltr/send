@@ -54,9 +54,10 @@ from the command line, where every user of the machine sees it; a file
 others may read is refused, except on Windows, where the file is as
 private as its directory's ACL) and writes
 the files into --to (default .). A name that already exists there refuses
-the transfer. Nothing lands until every file's SHA-256 over what is on
-disk equals the one the sender offered; a cut transfer is resumed, by itself and by the
-next receive of the same address, from what already arrived.
+the transfer. Each chunk is verified against the file's BLAKE3 root the
+sender offered as it arrives, and nothing lands until every file's BLAKE3
+over what is on disk is that root; a cut transfer is resumed, by itself and by the
+next receive of the same address, from what already arrived and verifies.
 
 Exit status: 0 done, 1 usage, 2 refused by the other side, 3 failed,
 12 no direct path to a sender serving with no account (relaying needs the

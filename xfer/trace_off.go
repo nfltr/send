@@ -20,6 +20,7 @@ func (r *receiver) trOpen(bool, string)  {}
 func (r *receiver) trSwept()             {}
 func (r *receiver) trStart(int, int64)   {}
 func (r *receiver) trData([]byte)        {}
+func (r *receiver) trBad([]byte)         {}
 func (r *receiver) trVerified(bool)      {}
 func (r *receiver) trCut()               {}
 func (r *receiver) trBegin(bool)         {}

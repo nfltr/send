@@ -6,11 +6,15 @@ package xfer
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/nfltr/send/xfer/verified"
 )
 
 // frame is one frame's bytes.
@@ -29,23 +33,25 @@ func manifestFrame(es ...Entry) []byte {
 // nothing may land outside the receiving directory (make check runs it
 // briefly; review 2026-11-17).
 func FuzzReceive(f *testing.F) {
-	hi := "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" // SHA-256 of "hi"
-	whole := append(manifestFrame(Entry{Path: "a", Size: 2, Mode: 0o644, SHA256: hi}), frame(frameStart, []byte(`{"i":0,"offset":0}`))...)
+	tr, _ := verified.New(strings.NewReader("hi"), 2)
+	hi := hex.EncodeToString(tr.Root[:])
+	whole := append(manifestFrame(Entry{Path: "a", Size: 2, Mode: 0o644, BLAKE3: hi}), frame(frameStart, []byte(`{"i":0,"offset":0}`))...)
+	whole = append(whole, frame(frameTree, tr.Outboard)...)
 	whole = append(whole, frame(frameData, []byte("hi"))...)
 	whole = append(whole, frame(frameEnd, []byte(`{"i":0}`))...)
 	whole = append(whole, frame(frameDone, nil)...)
 	for _, seed := range [][]byte{
 		whole,
-		manifestFrame(Entry{Path: "../escape", Size: 1, SHA256: hi}),
-		manifestFrame(Entry{Path: "/etc/passwd", Size: 1, SHA256: hi}),
-		manifestFrame(Entry{Path: `a\..\..\b`, Size: 1, SHA256: hi}),
-		manifestFrame(Entry{Path: "d", Dir: true}, Entry{Path: "d/../../x", Size: 1, SHA256: hi}),
+		manifestFrame(Entry{Path: "../escape", Size: 1, BLAKE3: hi}),
+		manifestFrame(Entry{Path: "/etc/passwd", Size: 1, BLAKE3: hi}),
+		manifestFrame(Entry{Path: `a\..\..\b`, Size: 1, BLAKE3: hi}),
+		manifestFrame(Entry{Path: "d", Dir: true}, Entry{Path: "d/../../x", Size: 1, BLAKE3: hi}),
 		manifestFrame(Entry{Path: ".nfltr-send-x", Dir: true}),
 		manifestFrame(Entry{Path: "a", Size: -1}),
 		frame(frameManifest, []byte(`{"version":1,"entries":[`)),
 		{frameManifest, 0xff, 0xff, 0xff, 0xff},
-		append(manifestFrame(Entry{Path: "a", Size: 1, SHA256: hi}), frameData, 0x7f, 0xff, 0xff, 0xff),
-		append(manifestFrame(Entry{Path: "a", Size: 1, SHA256: hi}), frame(frameStart, []byte(`{"i":0,"offset":5}`))...),
+		append(manifestFrame(Entry{Path: "a", Size: 1, BLAKE3: hi}), frameData, 0x7f, 0xff, 0xff, 0xff),
+		append(manifestFrame(Entry{Path: "a", Size: 1, BLAKE3: hi}), frame(frameStart, []byte(`{"i":0,"offset":5}`))...),
 		frame(frameAnswer, []byte(`{"message":"busy"}`)),
 	} {
 		f.Add(seed)

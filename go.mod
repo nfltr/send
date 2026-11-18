@@ -7,6 +7,7 @@ require (
 	github.com/nfltr/relay/client v0.22.4
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.48.0
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -22,6 +23,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jackpal/gateway v1.2.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.1.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nfltr/link v0.12.16 // indirect
 	github.com/nfltr/link/peerlink/quiclink v0.5.23 // indirect

@@ -16,8 +16,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nfltr/send/xfer/verified"
 )
 
 // StagePrefix starts the name of the directory a transfer is staged in,
@@ -32,6 +35,11 @@ const StageLife = 7 * 24 * time.Hour
 
 // ErrRefused is a transfer the receiver will not take; nothing changed.
 var ErrRefused = errors.New("refused")
+
+// ErrUnverified is a chunk that is not the offered file's (it does not
+// verify against the manifest's root): the session ends, the verified
+// part stays for the next.
+var ErrUnverified = errors.New("not the offered bytes")
 
 // Progress gets the file bytes written so far; nil: none.
 type Progress func(written int64)
@@ -70,7 +78,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if r.finishing { // a commit stopped part way: finish it, nothing is sent
 		a := Answer{Files: countFiles(m), Bytes: countBytes(m), OK: true}
 		if err := r.commit(); err != nil {
-			a = Answer{Message: err.Error(), keep: true}
+			a = Answer{Message: err.Error()}
 		}
 		if err := c.writeJSON(frameAnswer, a); err != nil {
 			return a, err
@@ -87,12 +95,9 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if err := c.flush(); err != nil {
 		return Answer{}, err
 	}
-	a, err := r.run(c, progress)
+	a, err := r.run(c, parts, progress)
 	if err != nil {
 		return a, err
-	}
-	if !a.OK && !a.keep { // refused: not resumed, so nothing of it stays
-		r.drop()
 	}
 	if err := c.writeJSON(frameAnswer, a); err != nil {
 		return a, err
@@ -205,11 +210,14 @@ func checkManifest(m Manifest) (tops []string, err error) {
 			return nil, fmt.Errorf("%q: offered twice", e.Path)
 		}
 		seen[name] = true
-		if e.Size < 0 || (e.Dir && e.Size != 0) {
+		// ponytail: a file's tree is held in memory while it is received
+		// (64 bytes per chunk: 256 MiB for a 1 TiB file), grown only as the
+		// sender sends it; maxSize keeps its size arithmetic exact.
+		if e.Size < 0 || e.Size > maxSize || (e.Dir && e.Size != 0) {
 			return nil, fmt.Errorf("%q: bad size", e.Path)
 		}
-		if d, err := hex.DecodeString(e.SHA256); !e.Dir && (err != nil || len(d) != sha256.Size) {
-			return nil, fmt.Errorf("%q: bad SHA-256", e.Path)
+		if d, err := hex.DecodeString(e.BLAKE3); !e.Dir && (err != nil || len(d) != 32) {
+			return nil, fmt.Errorf("%q: bad BLAKE3 root", e.Path)
 		}
 		if top, _, _ := strings.Cut(name, "/"); !slices.Contains(tops, top) {
 			tops = append(tops, top)
@@ -304,19 +312,6 @@ func (r *receiver) close() {
 	_ = r.root.Close()
 }
 
-// drop removes a refused transfer's stage under its lock (spec Commit.tla
-// Refuse).
-func (r *receiver) drop() {
-	if traceOn {
-		defer r.trAtomic()()
-		r.trCommit("Refuse", -1)
-	}
-	_ = r.sr.Close()
-	r.sr = nil
-	_ = removeStage(r.root, r.stage, r.lk)
-	r.lk = nil
-}
-
 // taken is the first top-level name dir already holds, or "".
 func (r *receiver) taken() string {
 	for _, top := range r.tops {
@@ -327,7 +322,19 @@ func (r *receiver) taken() string {
 	return ""
 }
 
-// parts are the files the stage holds a part of, each with its SHA-256.
+// treeName is entry i's tree (its outboard, as the sender sent it) in the
+// stage: what a part is verified with when a later session resumes it.
+func treeName(i int) string { return StagePrefix + "tree-" + strconv.Itoa(i) }
+
+// root is entry e's BLAKE3 root (checkManifest checked it).
+func root(e Entry) (r [32]byte) {
+	_, _ = hex.Decode(r[:], []byte(e.BLAKE3))
+	return r
+}
+
+// parts are the files the stage holds a part of, each with the length of
+// its prefix that verifies against the root, by the tree the stage kept
+// (spec Open). A part without its tree is not resumed.
 func (r *receiver) parts() ([]Part, error) {
 	var out []Part
 	for i, e := range r.m.Entries {
@@ -338,34 +345,46 @@ func (r *receiver) parts() ([]Part, error) {
 		if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
 			continue
 		}
+		ob, err := r.sr.ReadFile(treeName(i))
+		if err != nil {
+			continue
+		}
 		f, err := r.sr.Open(e.Path)
 		if err != nil {
 			return nil, err
 		}
-		sum, err := prefixSum(f, min(fi.Size(), e.Size))
+		n, err := verified.Tree{Root: root(e), Size: e.Size, Outboard: ob}.Prefix(f)
 		_ = f.Close()
 		if err != nil {
 			return nil, err
 		}
-		if sum != "" {
-			out = append(out, Part{Index: i, Offset: min(fi.Size(), e.Size), SHA256: sum})
+		if n > 0 {
+			out = append(out, Part{Index: i, Offset: n})
 		}
 	}
 	return out, nil
 }
 
-// run takes the files, verifies each from disk, and commits the whole
-// offer once every file is verified (spec Finish).
-func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
+// run takes the files, each chunk verified on arrival against the
+// manifest's root and written only then (spec Send; one that does not
+// verify ends the session, Bad), verifies each file from disk, and commits
+// the whole offer once every file is verified (spec Finish).
+func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error) {
 	var (
 		buf     []byte
 		f       *os.File
 		cur     = -1 // the entry being received
 		left    int64
-		next    int // entries before it are done
+		off     int64         // its next byte
+		tr      verified.Tree // its tree
+		next    int           // entries before it are done
 		written int64
 		a       Answer
 	)
+	asked := map[int]int64{}
+	for _, p := range parts {
+		asked[p.Index] = p.Offset
+	}
 	if traceOn {
 		defer func() {
 			if f != nil {
@@ -395,7 +414,7 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 				return fail("start of entry %d", s.Index)
 			}
 			e := r.m.Entries[s.Index]
-			if s.Offset < 0 || s.Offset > e.Size {
+			if s.Offset != 0 && s.Offset != asked[s.Index] {
 				return fail("offset %d of %q", s.Offset, e.Path)
 			}
 			if traceOn {
@@ -404,26 +423,51 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if f, err = r.open(e, s.Offset); err != nil {
 				return Answer{}, err
 			}
-			cur, left = s.Index, e.Size-s.Offset
+			cur, left, off = s.Index, e.Size-s.Offset, s.Offset
+			tr = verified.Tree{Root: root(e), Size: e.Size}
+		case frameTree:
+			need := verified.OutboardSize(tr.Size)
+			if f == nil || len(tr.Outboard)+len(p) > need {
+				return fail("tree past its end in entry %d", cur)
+			}
+			tr.Outboard = append(tr.Outboard, p...)
+			if len(tr.Outboard) == need { // kept for a later session's resume
+				if err := r.sr.WriteFile(treeName(cur), tr.Outboard, 0o600); err != nil {
+					_ = f.Close()
+					return Answer{}, err
+				}
+			}
 		case frameData:
-			if f == nil || int64(len(p)) > left {
-				return fail("data past the end of entry %d", cur)
+			if f == nil || len(tr.Outboard) != verified.OutboardSize(tr.Size) || int64(len(p)) > left {
+				return fail("data before the tree or past the end of entry %d", cur)
+			}
+			if !tr.Chunk(p, off) {
+				if traceOn {
+					r.trBad(p)
+				}
+				_ = f.Close()
+				f = nil
+				return Answer{}, fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, off, ErrUnverified)
 			}
 			if _, err := f.Write(p); err != nil {
 				_ = f.Close()
 				return Answer{}, err
 			}
+			if afterWrite != nil {
+				afterWrite(f, off)
+			}
 			if traceOn {
 				r.trData(p)
 			}
 			left -= int64(len(p))
+			off += int64(len(p))
 			written += int64(len(p))
 			if progress != nil {
 				progress(written)
 			}
 		case frameEnd:
 			var e end
-			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 {
+			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 || len(tr.Outboard) != verified.OutboardSize(tr.Size) {
 				return fail("end of entry %d", cur)
 			}
 			err := f.Sync() // on stable storage before it can be committed
@@ -434,12 +478,12 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 			if err != nil {
 				return Answer{}, err
 			}
-			err = r.verify(r.m.Entries[cur])
+			err = r.verify(r.m.Entries[cur], tr)
 			if traceOn {
 				r.trVerified(err == nil)
 			}
 			if err != nil {
-				return Answer{Message: err.Error()}, nil
+				return Answer{}, err
 			}
 			a.Files++
 			a.Bytes += r.m.Entries[cur].Size
@@ -449,7 +493,7 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 				return fail("done with %d of %d files", a.Files, countFiles(r.m))
 			}
 			if err := r.commit(); err != nil { // verified: the stage stays for the next session
-				return Answer{Message: err.Error(), keep: true}, nil
+				return Answer{Message: err.Error()}, nil
 			}
 			a.OK = true
 			return a, nil
@@ -458,6 +502,10 @@ func (r *receiver) run(c *conn, progress Progress) (Answer, error) {
 		}
 	}
 }
+
+// afterWrite, when set, runs after each chunk is written (a test lands one
+// wrong).
+var afterWrite func(f *os.File, off int64)
 
 // open opens entry e's part, cut to off (the offset the sender resumes at).
 func (r *receiver) open(e Entry, off int64) (*os.File, error) {
@@ -480,23 +528,29 @@ func (r *receiver) open(e Entry, off int64) (*os.File, error) {
 	return f, nil
 }
 
-// verify compares the SHA-256 of what is on disk with the manifest's; an
-// unequal part is removed, so the next attempt sends it whole.
-func (r *receiver) verify(e Entry) error {
-	f, err := r.sr.Open(e.Path)
+// verify compares the BLAKE3 of what is on disk with the root; a file
+// that differs (a chunk that landed wrong) is cut to its verified prefix,
+// which the next session resumes from (spec Finish).
+func (r *receiver) verify(e Entry, tr verified.Tree) error {
+	f, err := r.sr.OpenFile(e.Path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
-	got, err := prefixSum(f, e.Size)
-	_ = f.Close()
-	if err == nil && got == e.SHA256 {
-		return nil
+	defer f.Close() //nolint:errcheck
+	if sum, err := verified.Sum(f); err != nil || sum == tr.Root {
+		return err
 	}
-	_ = r.sr.Remove(e.Path)
+	n, err := f.Seek(0, io.SeekStart)
+	if err == nil {
+		n, err = tr.Prefix(f)
+	}
+	if err == nil {
+		err = f.Truncate(n)
+	}
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("%q: SHA-256 of what landed is not the offered one; removed, the next receive sends it again", e.Path)
+	return fmt.Errorf("%q: what landed is %w after %d bytes; the next session resumes there", e.Path, ErrUnverified, n)
 }
 
 // commit makes the directories, gives files their mtimes, syncs them,
@@ -591,7 +645,7 @@ func (r *receiver) move(top string) error {
 
 // placed checks that top, which a stopped commit moved into place, is still
 // this offer's: every manifest entry under it is in dir, a directory as a
-// directory, a file with the manifest's size and SHA-256. Someone may have
+// directory, a file with the manifest's size and BLAKE3 root. Someone may have
 // deleted it and made another since; that one is ErrNotOurs, and stays
 // (review 2026-11-17 #2, finding B; spec Commit.tla Rename).
 func (r *receiver) placed(top string) error {
@@ -625,8 +679,8 @@ func (r *receiver) holds(e Entry) bool {
 		return false
 	}
 	defer f.Close() //nolint:errcheck
-	sum, err := prefixSum(f, e.Size)
-	return err == nil && sum == e.SHA256
+	sum, err := verified.Sum(f)
+	return err == nil && sum == root(e)
 }
 
 // writeIntent writes the intent record and puts it on stable storage.
