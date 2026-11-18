@@ -505,12 +505,12 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			}
 			tr = verified.Tree{Root: root(e), Size: e.Size}
 		case frameTree:
-			need := verified.OutboardSize(tr.Size)
-			if f == nil || len(tr.Outboard)+len(p) > need {
+			whole := verified.OutboardSize(tr.Size)
+			if f == nil || len(tr.Outboard)+len(p) > whole {
 				return fail("tree past its end in entry %d", cur)
 			}
 			tr.Outboard = append(tr.Outboard, p...)
-			if len(tr.Outboard) == need && !oneChunk(tr.Size) { // kept for a later session's resume (keptTree)
+			if len(tr.Outboard) == whole && !oneChunk(tr.Size) { // kept for a later session's resume (keptTree)
 				if err := r.sr.WriteFile(treeName(cur), tr.Outboard, 0o600); err != nil {
 					_ = f.Close()
 					return Answer{}, err
