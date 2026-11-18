@@ -11,49 +11,66 @@
 \* file's chunk there. The receiver verifies each chunk on arrival against
 \* the root and writes only one that verifies; a chunk that does not is
 \* refused at once and the session ends. A session opens with the receiver
-\* verifying its part chunk by chunk (with the tree it kept) and resuming
-\* after a verified prefix of it; at the end it verifies the whole file on
-\* its disk and commits it only when every chunk verifies, else keeps the
-\* verified prefix for the next session.
+\* verifying its part chunk by chunk (with the tree it kept) and asking the
+\* sender for the chunks that are missing or do not verify, every other
+\* chunk kept (a resume set, not a prefix); at the end it verifies the
+\* whole file on its disk and commits it only when every chunk verifies,
+\* else keeps it for the next session to verify again.
 
-EXTENDS Naturals, Sequences
+EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS N,         \* the file's length (in chunks)
           Vals,      \* a chunk's possible contents
+          Hole,      \* no chunk there (never written, or lost)
           MaxFaults, \* session ends, crashes, rot and source changes, together
           Mutant     \* "none", or the planted failure (README "Mutants")
 
 VARIABLES offer,     \* the file the offer pinned (its root)
           src,       \* the sender's file now
-          part,      \* the receiver's partial file, durable
+          part,      \* the receiver's partial file, durable: a chunk or Hole per position
+          need,      \* the chunks the open session asks the sender for
           sess,      \* "none" | "open"
           committed, \* the committed file, <<>> before
           faults,    \* faults so far
-          resumed,   \* a session resumed at a non-zero offset
+          resumed,   \* a session resumed with a chunk kept
           refused    \* a chunk was refused
 
-vars == <<offer, src, part, sess, committed, faults, resumed, refused>>
+vars == <<offer, src, part, need, sess, committed, faults, resumed, refused>>
 
-Files == [1..N -> Vals]
-Seqs  == UNION {[1..k -> Vals] : k \in 0..N}
-
-IsPrefix(p, s) == Len(p) <= Len(s) /\ SubSeq(s, 1, Len(p)) = p
+Pos   == 1..N
+Files == [Pos -> Vals]
+Parts == [Pos -> Vals \cup {Hole}]
+Empty == [i \in Pos |-> Hole]
 
 \* The root a chunk is verified against: the pinned offer's (mutant
 \* "root-unbound": the one of the file the sender has now).
 Root == IF Mutant = "root-unbound" THEN src ELSE offer
-Verified(i, v) == Root[i] = v
+Verified(i, v) == v # Hole /\ Root[i] = v
 
-\* VLen(p, 0): the length of p's longest prefix whose chunks all verify.
-RECURSIVE VLen(_, _)
-VLen(p, k) == IF k < Len(p) /\ Verified(k + 1, p[k + 1]) THEN VLen(p, k + 1) ELSE k
+\* Good(p): the positions of p whose chunk verifies.
+Good(p) == {i \in Pos : Verified(i, p[i])}
+Min(S) == CHOOSE i \in S : \A j \in S : i <= j
+Max(S) == CHOOSE i \in S : \A j \in S : i >= j
+
+\* Ask(p): what a session opening on p asks for: every chunk missing or not
+\* verifying (mutants: "resume-unverified" keeps a chunk that is there but
+\* does not verify; "skip-missing" leaves out the last chunk it should ask
+\* for; "resend-verified" asks for everything from the first such chunk on,
+\* as a prefix resume does).
+Ask(p) ==
+    LET bad == Pos \ Good(p) IN
+    CASE Mutant = "resume-unverified" -> {i \in Pos : p[i] = Hole}
+      [] Mutant = "skip-missing" /\ bad # {} -> bad \ {Max(bad)}
+      [] Mutant = "resend-verified" /\ bad # {} -> {i \in Pos : i >= Min(bad)}
+      [] OTHER -> bad
 
 TypeOK ==
     /\ offer \in Files
     /\ src \in Files
-    /\ part \in Seqs
+    /\ part \in Parts
+    /\ need \subseteq Pos
     /\ sess \in {"none", "open"}
-    /\ committed \in Seqs
+    /\ committed \in {<<>>} \cup Parts
     /\ faults \in 0..MaxFaults
     /\ resumed \in BOOLEAN
     /\ refused \in BOOLEAN
@@ -61,91 +78,91 @@ TypeOK ==
 Init ==
     /\ offer \in Files
     /\ src = offer
-    /\ part = <<>>
+    /\ part = Empty
+    /\ need = {}
     /\ sess = "none"
     /\ committed = <<>>
     /\ faults = 0
     /\ resumed = FALSE
     /\ refused = FALSE
 
-\* Open: the receiver verifies its part and resumes after a verified prefix
-\* of it (the longest, or less: a tree it did not keep); it asks the sender
-\* for the rest (mutant "resume-unverified": after the whole part).
+\* Open: the receiver verifies its part and asks for what it lacks, or, with
+\* no tree kept, for the whole file.
 Open ==
     /\ sess = "none" /\ committed = <<>>
-    /\ \E off \in IF Mutant = "resume-unverified" THEN {Len(part)} ELSE 0..VLen(part, 0) :
-          /\ part' = SubSeq(part, 1, off)
-          /\ resumed' = (resumed \/ off > 0)
+    /\ \E ask \in {Ask(part), Pos} :
+          /\ need' = ask
+          /\ resumed' = (resumed \/ ask # Pos)
     /\ sess' = "open"
-    /\ UNCHANGED <<offer, src, committed, faults, refused>>
+    /\ UNCHANGED <<offer, src, part, committed, faults, refused>>
 
-\* Send: the sender's next chunk, verified, written at the end of part
+\* Send: the sender's next asked chunk, verified, written at its position
 \* (mutant "accept-unverified": written unverified).
 Send ==
-    /\ sess = "open" /\ Len(part) < N
-    /\ Verified(Len(part) + 1, src[Len(part) + 1]) \/ Mutant = "accept-unverified"
-    /\ part' = Append(part, src[Len(part) + 1])
+    /\ sess = "open" /\ need # {}
+    /\ LET i == Min(need) IN
+          /\ Verified(i, src[i]) \/ Mutant = "accept-unverified"
+          /\ part' = [part EXCEPT ![i] = src[i]]
+          /\ need' = need \ {i}
     /\ UNCHANGED <<offer, src, sess, committed, faults, resumed, refused>>
 
-\* Bad: the sender's next chunk does not verify: refused at once, not
+\* Bad: the sender's next asked chunk does not verify: refused at once, not
 \* written; the session ends, the part stays.
 Bad ==
-    /\ sess = "open" /\ Len(part) < N /\ Mutant # "accept-unverified"
-    /\ ~Verified(Len(part) + 1, src[Len(part) + 1])
+    /\ sess = "open" /\ need # {} /\ Mutant # "accept-unverified"
+    /\ ~Verified(Min(need), src[Min(need)])
     /\ sess' = "none" /\ refused' = TRUE
-    /\ UNCHANGED <<offer, src, part, committed, faults, resumed>>
+    /\ UNCHANGED <<offer, src, part, need, committed, faults, resumed>>
 
-\* Finish: the whole file on the receiver's disk verified; committed when
-\* every chunk verifies (mutant "no-final-check": unchecked), else cut to
-\* its verified prefix.
+\* Finish: every asked chunk arrived; the whole file on the receiver's disk
+\* verified, committed when every chunk verifies (mutant "no-final-check":
+\* unchecked), else kept for the next session to verify again.
 Finish ==
-    /\ sess = "open" /\ Len(part) = N
-    /\ IF VLen(part, 0) = N \/ Mutant = "no-final-check"
-          THEN /\ committed' = part /\ UNCHANGED part
-          ELSE /\ part' = SubSeq(part, 1, VLen(part, 0))
-               /\ UNCHANGED committed
+    /\ sess = "open" /\ need = {}
+    /\ IF Good(part) = Pos \/ Mutant = "no-final-check"
+          THEN committed' = part
+          ELSE UNCHANGED committed
     /\ sess' = "none"
-    /\ UNCHANGED <<offer, src, faults, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused>>
 
 \* CleanEnd (mutant "commit-cut" only): a session that ends cleanly
 \* between chunks taken as the transfer's end, committed as it is.
 CleanEnd ==
     /\ Mutant = "commit-cut"
-    /\ sess = "open" /\ 0 < Len(part) /\ Len(part) < N
+    /\ sess = "open" /\ need # {} /\ need # Pos
     /\ committed' = part /\ sess' = "none"
-    /\ UNCHANGED <<offer, src, part, faults, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused>>
 
 \* Cut: the session ends (the network, either process): part stays.
 Cut ==
     /\ sess = "open" /\ faults < MaxFaults
     /\ sess' = "none" /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, src, part, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, committed, resumed, refused>>
 
-\* Crash: the receiver dies; what it wrote last may be lost or torn (any
-\* shorter prefix, or a prefix whose last chunk holds other bytes).
+\* Crash: the receiver dies; what it wrote but had not synced may be lost
+\* (any chunks) or torn (one chunk holds other bytes).
 Crash ==
     /\ committed = <<>> /\ faults < MaxFaults
-    /\ \E k \in 0..Len(part) :
-        \/ part' = SubSeq(part, 1, k)
-        \/ k > 0 /\ \E v \in Vals : part' = Append(SubSeq(part, 1, k - 1), v)
+    /\ \E lost \in SUBSET Pos, t \in Pos, v \in Vals \cup {Hole} :
+          part' = [i \in Pos |-> IF i = t THEN v ELSE IF i \in lost THEN Hole ELSE part[i]]
     /\ sess' = "none" /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, src, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, src, need, committed, resumed, refused>>
 
 \* Rot: a chunk on the receiver's disk is not what was written (a write
 \* that landed wrong, a bad disk, another program), at any time before the
 \* commit.
 Rot ==
-    /\ committed = <<>> /\ Len(part) > 0 /\ faults < MaxFaults
-    /\ \E i \in 1..Len(part), v \in Vals : v # part[i] /\ part' = [part EXCEPT ![i] = v]
+    /\ committed = <<>> /\ faults < MaxFaults
+    /\ \E i \in Pos, v \in Vals : part[i] # Hole /\ v # part[i] /\ part' = [part EXCEPT ![i] = v]
     /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, src, sess, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, src, need, sess, committed, resumed, refused>>
 
 \* Change: the sender's file is rewritten (between sessions or during
 \* one); the offer is not.
 Change ==
     /\ committed = <<>> /\ faults < MaxFaults
     /\ src' \in Files \ {src} /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, part, sess, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, part, need, sess, committed, resumed, refused>>
 
 \* Served: the transfer is committed; nothing more happens to this file.
 Served == committed # <<>> /\ UNCHANGED vars
@@ -158,10 +175,15 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Open) /\ WF_vars(Send) /\ WF_vars(Bad) 
 Safe == committed # <<>> => committed = offer
 
 \* Kept: a chunk the receiver writes is the offer's (action property).
-Kept == [][Len(part') > Len(part) => part'[Len(part')] = offer[Len(part')]]_vars
+Kept == [][sess = "open" /\ sess' = "open" /\ need' # need => \A i \in need \ need' : part'[i] = offer[i]]_vars
 
-\* Resumed: a session resumes only after chunks that are the offer's.
-Resumed == [][sess = "none" /\ sess' = "open" => IsPrefix(part', offer)]_vars
+\* Resumed: a session keeps only chunks that are the offer's: every chunk
+\* it does not ask for is there and verifies (action property).
+Resumed == [][sess = "none" /\ sess' = "open" => \A i \in Pos \ need' : part'[i] = offer[i]]_vars
+
+\* Minimal: a session resuming a part asks for no chunk that verifies
+\* (action property; with no tree kept it asks for the whole file).
+Minimal == [][sess = "none" /\ sess' = "open" /\ need' # Pos => need' \cap Good(part) = {}]_vars
 
 \* Done: with finitely many faults, the transfer commits, or the sender's
 \* file is no longer the offered one.
@@ -170,6 +192,9 @@ Done == <>(committed # <<>>) \/ <>[](src # offer)
 \* Witnesses (each must be violated: the behaviour is reachable).
 WitnessResumedCommit == ~(committed # <<>> /\ resumed)
 WitnessChangedThenCommit == ~(committed # <<>> /\ faults = MaxFaults)
-WitnessDiscarded == ~(sess = "none" /\ part = <<>> /\ faults > 0 /\ resumed)
+WitnessDiscarded == ~(sess = "none" /\ part = Empty /\ faults > 0 /\ resumed)
 WitnessRefusedThenCommit == ~(committed # <<>> /\ refused)
+\* WitnessGap: a session asks for a chunk before one it keeps (a resume set
+\* that is not a prefix).
+WitnessGap == ~(sess = "open" /\ \E i, j \in Pos : i < j /\ i \in need /\ j \notin need)
 =============================================================================

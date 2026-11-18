@@ -16,11 +16,11 @@ tlc Resume Resume -coverage 1
 zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module Resume: 0$/ && a != "<CleanEnd" && a != "<Action" {print}' "$tmp/Resume.out")
 if grep -q 'No error has been found' "$tmp/Resume.out" && [ -z "$zero" ]; then echo "ok   Resume: invariants and Done hold, every action taken"
 else echo "FAIL Resume"; cat "$tmp/Resume.out"; fail=1; fi
-for c in WitnessResumedCommit WitnessChangedThenCommit WitnessDiscarded WitnessRefusedThenCommit; do
+for c in WitnessResumedCommit WitnessChangedThenCommit WitnessDiscarded WitnessRefusedThenCommit WitnessGap; do
 	tlc Resume "$c"
 	if grep -q "Invariant $c is violated" "$tmp/$c.out"; then echo "ok   $c violated (reachable)"; else echo "FAIL $c not violated"; fail=1; fi
 done
-for m in accept-unverified resume-unverified root-unbound commit-cut no-final-check; do
+for m in accept-unverified resume-unverified skip-missing resend-verified root-unbound commit-cut no-final-check; do
 	tlc Resume "mutant-$m"
 	if v=$(grep -E -o '(Invariant|Action property) [A-Za-z]+ (of the PROPERTIES )?is violated' "$tmp/mutant-$m.out"); then echo "ok   mutant $m caught ($v)"; else echo "FAIL mutant $m not caught"; fail=1; fi
 done
