@@ -7,7 +7,7 @@ whoever holds it receives.
 
 ```console
 sender$ nfltr-send send big.bin > address
-serving 1 files, 1073741824 bytes; give the receiver this address (a secret: whoever holds it can receive):
+serving 1 file, 1073741824 bytes; give the receiver this address (a secret: whoever holds it can receive):
 receiver$ nfltr-send receive --to ~/Downloads < address
 received 1 file, 1073741824 bytes in 4.5 s (237 MB/s), path direct
 ```
@@ -134,7 +134,9 @@ on|off`, `--machine-credential <file>`, `--relay <address>` (default
 `--relay-pin <sha256>` (a private relay's certificate).
 `receive`: `--to <dir>`, `--address-file <file>` (default stdin),
 `--tries <n>` (default 10, each session resuming the last), `--json` (one
-JSON line of totals on stderr). `nfltr-send <command> -h` lists them all.
+JSON line on stderr: the totals and `paths`, each path the transfer used;
+on failure instead `exit`, `code` (`usage`, `refused`, `failed`,
+`direct_required`) and `error`, the exit status unchanged). `nfltr-send <command> -h` lists them all.
 
 Exit codes: 0 done, 1 usage, 2 refused (a name exists, busy, too many
 sessions, a commit refused), 3 failed, 12 `direct_required` (no direct

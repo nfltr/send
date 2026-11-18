@@ -186,7 +186,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	}
 	defer ln.Close() //nolint:errcheck
 	files, bytes := src.Files()
-	fmt.Fprintf(os.Stderr, "serving %d files, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, bytes)
+	fmt.Fprintf(os.Stderr, "serving %d %s, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, filesWord(files), bytes)
 	fmt.Fprintln(out, ln.Address())
 	done := make(chan struct{}, 1)
 	sessions := newLimiter(maxSessions)
@@ -220,7 +220,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 				slog.Warn("receiver refused", "reason", a.Message)
 			default:
 				slog.Info("transfer done", "files", a.Files, "bytes", a.Bytes, "sent", sent, "seconds", time.Since(t0).Seconds())
-				fmt.Fprintf(os.Stderr, "sent %d files, %d bytes (%d this session) in %.1f s\n", a.Files, a.Bytes, sent, time.Since(t0).Seconds())
+				fmt.Fprintf(os.Stderr, "sent %d %s, %d bytes (%d this session) in %.1f s\n", a.Files, filesWord(a.Files), a.Bytes, sent, time.Since(t0).Seconds())
 				if once {
 					done <- struct{}{}
 					_ = ln.Close()
@@ -281,7 +281,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	addrFile := fs.String("address-file", "-", "read the address from this `file` (mode 0600), or - for stdin")
 	to := fs.String("to", ".", "receive into this `directory`")
 	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last")
-	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths")
+	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths (each path used, in order); on failure instead exit, code (usage, refused, failed, direct_required) and error")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		if err == nil {
@@ -289,6 +289,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 		}
 		return 1
 	}
+	fail := func(code int, err error) int { return failTo(os.Stderr, *asJSON, code, err) }
 	addr, err := readAddress(*addrFile)
 	if err != nil {
 		return fail(1, err)
@@ -302,21 +303,35 @@ func receiveCmd(ctx context.Context, args []string) int {
 		return fail(1, err)
 	}
 	cfg.Relay = t.Address.Relay // --relay-pin verifies the address's relay
-	return receive(ctx, cfg, t, mode, *to, *tries, *asJSON)
+	return receiveTo(ctx, os.Stderr, cfg, t, mode, *to, *tries, *asJSON)
 }
 
-// receive receives the offer at t into dir, resuming up to tries sessions.
-func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) (code int) {
+// receiveTo receives the offer at t into dir, resuming up to tries sessions.
+func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) (code int) {
 	var mu sync.Mutex
-	path, paths := "relayed", []string{}
+	var path string
+	var paths []string
+	// onPath records each session's path, the one it opened on and every
+	// move, in order (a reason with a relayed one when the SDK gives one):
+	// a session that opens relayed and never moves sends no path event.
+	onPath := func(p, reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		e := strings.TrimSuffix(p+"/"+reason, "/")
+		if n := len(paths); n > 0 && p == path {
+			if reason != "" {
+				paths[n-1] = e
+			}
+			return
+		}
+		path, paths = p, append(paths, e)
+	}
 	cfg.Events = func(e nfnet.Event) {
 		if e.Kind == "path" {
-			mu.Lock()
-			path = e.Path
-			paths = append(paths, strings.TrimSuffix(e.Path+"/"+e.Reason, "/"))
-			mu.Unlock()
+			onPath(e.Path, e.Reason)
 		}
 	}
+	fail := func(code int, err error) int { return failTo(w, asJSON, code, err) }
 	d, err := nfnet.NewDialer(cfg)
 	if err != nil {
 		return fail(1, err)
@@ -343,20 +358,16 @@ func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.D
 	}
 	for try := 1; ; try++ {
 		base = written
-		a, err := receiveOnce(ctx, d, t, mode, dir, progress)
+		a, err := receiveOnce(ctx, d, t, mode, dir, progress, onPath)
 		switch {
 		case err == nil && a.OK:
 			el := time.Since(t0).Seconds()
 			mu.Lock()
-			files := "files"
-			if a.Files == 1 {
-				files = "file"
-			}
-			fmt.Fprintf(os.Stderr, "received %d %s, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, files, a.Bytes, el, float64(a.Bytes)/1e6/el, path)
+			fmt.Fprintf(w, "received %d %s, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, filesWord(a.Files), a.Bytes, el, float64(a.Bytes)/1e6/el, path)
 			if asJSON {
 				b, _ := json.Marshal(map[string]any{"files": a.Files, "bytes": a.Bytes, "written": written, "seconds": el,
 					"first_byte_s": first.Seconds(), "sessions": try, "paths": paths})
-				fmt.Fprintln(os.Stderr, string(b))
+				fmt.Fprintln(w, string(b))
 			}
 			mu.Unlock()
 			return 0
@@ -367,11 +378,11 @@ func receive(ctx context.Context, cfg nfnet.Config, t nfnet.Target, mode nfnet.D
 		case nfnet.CodeOf(err) == nfnet.CodeDirectRequired && errors.As(err, new(openError)):
 			// a session that opened and lost its direct path resumes; one
 			// that found none ends here
-			return fail(12, fmt.Errorf("%w; the sender serves with no account, so relaying needs its nfltr account (the sender runs `nfltr config login`); receive the same address again to resume", err))
+			return fail(12, fmt.Errorf("%w (the sender runs `nfltr config login`); receive the same address again to resume", err))
 		case try >= tries || errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError)):
 			return fail(3, fmt.Errorf("%w; receive the same address again to resume", err))
 		}
-		fmt.Fprintf(os.Stderr, "session %d ended (%v); resuming\n", try, err)
+		fmt.Fprintf(w, "session %d ended (%v); resuming\n", try, err)
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Duration(min(try, 5)) * time.Second):
@@ -394,13 +405,14 @@ func openBound(mode nfnet.DirectMode) time.Duration {
 	return 60 * time.Second
 }
 
-func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, dir string, progress xfer.Progress) (xfer.Answer, error) {
+func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, dir string, progress xfer.Progress, onPath func(path, reason string)) (xfer.Answer, error) {
 	open, cancel := context.WithTimeout(ctx, openBound(mode))
 	c, err := d.DialTarget(open, t, nfnet.DialOptions{Direct: mode})
 	cancel()
 	if err != nil {
 		return xfer.Answer{}, openError{err}
 	}
+	onPath(c.Info().Path, "")
 	defer c.Close() //nolint:errcheck
 	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
 	defer stop()
@@ -437,6 +449,13 @@ func enrolHint(err error, anon bool) error {
 	return err
 }
 
+func filesWord(n int) string {
+	if n == 1 {
+		return "file"
+	}
+	return "files"
+}
+
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -451,7 +470,19 @@ func firstOf(a, b string) string {
 	return b
 }
 
-func fail(code int, err error) int {
-	fmt.Fprintln(os.Stderr, "nfltr-send:", err)
+func fail(code int, err error) int { return failTo(os.Stderr, false, code, err) }
+
+// exitCodes names receive's exit statuses in its --json failure object.
+var exitCodes = map[int]string{1: "usage", 2: "refused", 3: "failed", 12: "direct_required"}
+
+// failTo says why to w once: as a line, or (asJSON) as one JSON object
+// with the exit status, its code and the message.
+func failTo(w io.Writer, asJSON bool, code int, err error) int {
+	if !asJSON {
+		fmt.Fprintln(w, "nfltr-send:", err)
+		return code
+	}
+	b, _ := json.Marshal(map[string]any{"exit": code, "code": exitCodes[code], "error": err.Error()})
+	fmt.Fprintln(w, string(b))
 	return code
 }

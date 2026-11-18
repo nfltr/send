@@ -66,7 +66,7 @@ func receiveFrom(t *testing.T, r *relaycoretest.Relay, addr string, mode nfnet.D
 	cfg := nfnet.Config{Relay: tg.Address.Relay, Plaintext: true, DialRelay: func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", r.Proxy)
 	}}
-	return receive(t.Context(), cfg, tg, mode, to, 3, false)
+	return receiveTo(t.Context(), os.Stderr, cfg, tg, mode, to, 3, false)
 }
 
 func offer(t *testing.T) string {
