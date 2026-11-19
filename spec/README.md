@@ -114,14 +114,17 @@ between them (lanes SENDFIX and SENDONCE, docs/reliability.md "Defects
 found and fixed"): the receiver commits, writes its answer, closes the
 session and exits; the sender reads the answer and counts the transfer
 done (a `--once` sender exits). A close delivers what was written before
-it, then a clean end, and returns once the sender read it all; a cut (the
-network, the sender's death, the relay) delivers some prefix of what was
-written, then a reset, and fails the receiver's later writes and its
-close. A receiver that committed and whose close did not return clean
-dials the address again and answers the manifest at once (`Retell`), up to
+it, then a clean end; a cut (the network, the sender's death, the relay)
+delivers some prefix of what was written, then a reset, at any time, also
+after the receiver's close returned (it returns once the relay has the
+frames, not the sender). The sender ends a session cleanly once it read
+the answer, and the receiver takes that end (end to end, under TLS after
+its close_notify) as the sender's word. A receiver that committed and whose
+session was cut before that end dials the address again and answers the
+manifest at once (`Retell`), up to
 `MaxTries` dials (receive's `--tries`); a dial while the sender no longer
 serves fails (`Unserved`), and after the last the receiver exits ok all the
-same (`GiveUp`). Two cuts, three dials: 648 states. Not traced (two
+same (`GiveUp`). Two cuts, three dials: 712 states. Not traced (two
 processes; see "Traces").
 
 | invariant / property | meaning |
@@ -143,6 +146,7 @@ processes; see "Traces").
 | `close-cuts` | the receiver's close cuts the nf1 data connection at once, its unwritten frames lost, and the relay resets the session (defect 1: a `--once` sender read "session reset by the peer" and served on in 74 of 130 relayed runs) | `Told` |
 | `exit-on-answer` | a receiver that committed exits failed because its answer did not go (defect 2: exit 3, and the next receive of a new address refused, the names taken) | `ExitRight` |
 | `no-retell` | a receiver that committed exits ok when its session was cut before its answer arrived, telling no one (defect 3: a link drop longer than the session's liveness left the `--once` sender serving, 4 of 20 relayed drops) | `Retold` |
+| `close-confirms` | the receiver takes its own close's clean return as the sender's word (SENDONCE's first fix: the soak's link drop still left the sender serving, the relay having taken the answer) | `Retold` |
 | `sender-gives-up` | the rejected design: a `--once` sender that reads a reset after its last byte exits as if delivered | `Confirmed` |
 
 ## Environment assumptions

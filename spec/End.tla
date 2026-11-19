@@ -8,15 +8,18 @@
 \* exits; the sender reads the answer and counts the transfer done (a
 \* --once sender exits). The sessions carry the receiver's frames to the
 \* sender in order (one queue: a later session's frames after an earlier
-\* one's); a close delivers what was written before it, then a clean end,
-\* and returns once the sender read it all; a cut (the network, the
-\* sender's death, the relay) delivers some prefix of what was written,
-\* then a reset, and fails the receiver's later writes and its close. A
-\* receiver that committed and whose close did not return clean (its
-\* answer may not have reached the sender) dials the address again and
-\* answers the manifest at once (Retell, lane SENDONCE), up to MaxTries
-\* dials; a dial while the sender no longer serves fails. The sender's
-\* own frames before the answer are Resume's.
+\* one's); a close delivers what was written before it, then a clean end;
+\* a cut (the network, the sender's death, the relay) delivers some prefix
+\* of what was written, then a reset, and fails the receiver's later
+\* writes, at any time, also after the receiver's close returned (that
+\* close returns once the relay has its frames, not the sender). The
+\* sender ends a session cleanly once it read the answer; the receiver
+\* takes that end, end to end, as the sender's word. A receiver that
+\* committed and whose session was cut before that end (its answer may
+\* not have reached the sender) dials the address again and answers the
+\* manifest at once (Retell, lane SENDONCE), up to MaxTries dials; a dial
+\* while the sender no longer serves fails. The sender's own frames
+\* before the answer are Resume's.
 
 EXTENDS Naturals, Sequences
 
@@ -31,9 +34,10 @@ VARIABLES committed, \* the receiver committed the offer
           cut,       \* the receiver's current session was cut
           cuts,      \* cuts so far
           tries,     \* dials made to tell the sender again
+          ended,     \* the sender's clean end of the receiver's session arrived (it read an answer)
           lost       \* ghost: a cut lost a committed receiver's answer (the sender had not read one)
 
-vars == <<committed, wire, rx, sx, cut, cuts, tries, lost>>
+vars == <<committed, wire, rx, sx, cut, cuts, tries, ended, lost>>
 
 Frames == {"answer", "end", "reset"}
 Exited == {"ok", "failed"}
@@ -48,25 +52,26 @@ TypeOK ==
     /\ cut \in BOOLEAN
     /\ cuts \in 0..MaxFaults
     /\ tries \in 0..MaxTries
+    /\ ended \in BOOLEAN
     /\ lost \in BOOLEAN
 
 Init ==
     /\ committed = FALSE /\ wire = <<>> /\ rx = "run" /\ sx = "serve"
-    /\ cut = FALSE /\ cuts = 0 /\ tries = 0 /\ lost = FALSE
+    /\ cut = FALSE /\ cuts = 0 /\ tries = 0 /\ ended = FALSE /\ lost = FALSE
 
 \* Commit: every file arrived and verified (before or as the session was
 \* cut: what the sender wrote before its death still arrives), committed.
 Commit ==
     /\ rx = "run" /\ ~committed
     /\ committed' = TRUE
-    /\ UNCHANGED <<wire, rx, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<wire, rx, sx, cut, cuts, tries, ended, lost>>
 
 \* Answer: the receiver writes its answer on the session it still has
 \* (after a Retell dial: at once, in place of its want).
 Answer ==
     /\ rx = "run" /\ committed /\ ~cut
     /\ wire' = Append(wire, "answer") /\ rx' = "answered"
-    /\ UNCHANGED <<committed, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<committed, sx, cut, cuts, tries, ended, lost>>
 
 \* Close: the receiver closes the session: what it wrote, then the end
 \* (relay client nfnet: the nf1 data connection drained, Mux.Drain).
@@ -79,24 +84,26 @@ Close ==
           THEN \E p \in Prefixes(wire) : wire' = Append(p, "reset")
           ELSE wire' = Append(wire, "end")
     /\ rx' = "closed"
-    /\ UNCHANGED <<committed, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<committed, sx, cut, cuts, tries, ended, lost>>
 
-\* Exit: the close returned clean, the sender read every frame: ok, it
-\* committed.
+\* Exit: the sender's clean end came: ok, it committed. Mutant
+\* "close-confirms" (lane SENDONCE's first fix, caught by its soak): the
+\* receiver takes its own close's clean return as the sender's word.
 Exit ==
-    /\ rx = "closed" /\ ~cut /\ wire = <<>>
+    /\ rx = "closed" /\ ~cut /\ (ended \/ Mutant = "close-confirms")
     /\ rx' = "ok"
-    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, ended, lost>>
 
-\* Cut: the session ends as failed before the receiver's close returned:
-\* some prefix of what it wrote arrives, then the reset.
+\* Cut: the session ends as failed while the receiver has it or frames
+\* are still in flight: some prefix of what it wrote arrives, then the
+\* reset.
 Cut ==
-    /\ ~cut /\ cuts < MaxFaults /\ rx \in {"run", "answered", "closed"}
+    /\ ~cut /\ cuts < MaxFaults /\ (rx \in {"run", "answered", "closed"} \/ wire # <<>>)
     /\ \E p \in Prefixes(wire) :
           /\ wire' = Append(p, "reset")
           /\ lost' = (lost \/ (committed /\ sx = "serve" /\ ~Has(p, "answer")))
     /\ cut' = TRUE /\ cuts' = cuts + 1
-    /\ UNCHANGED <<committed, rx, sx, tries>>
+    /\ UNCHANGED <<committed, rx, sx, tries, ended>>
 
 \* Fail: a receiver whose session was cut: one that committed tells the
 \* sender again (Retell; its files are in place); one that did not exits
@@ -110,13 +117,13 @@ Fail ==
     /\ rx' = CASE ~committed \/ Mutant = "exit-on-answer" -> "failed"
                [] Mutant = "no-retell"                  -> "ok"
                [] OTHER                                 -> "retell"
-    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, ended, lost>>
 
 \* Retell: the committed receiver dials the address again; the sender
 \* still serves it, a new session.
 Retell ==
     /\ rx = "retell" /\ tries < MaxTries /\ sx = "serve"
-    /\ rx' = "run" /\ cut' = FALSE /\ tries' = tries + 1
+    /\ rx' = "run" /\ cut' = FALSE /\ ended' = FALSE /\ tries' = tries + 1
     /\ UNCHANGED <<committed, wire, sx, cuts, lost>>
 
 \* Unserved: the dial finds the address no longer served (a --once sender
@@ -124,17 +131,18 @@ Retell ==
 Unserved ==
     /\ rx = "retell" /\ tries < MaxTries /\ sx = "done"
     /\ tries' = tries + 1
-    /\ UNCHANGED <<committed, wire, rx, sx, cut, cuts, lost>>
+    /\ UNCHANGED <<committed, wire, rx, sx, cut, cuts, ended, lost>>
 
 \* GiveUp: every dial made; the receiver exits ok (it committed) and says
 \* the sender may not know.
 GiveUp ==
     /\ rx = "retell" /\ tries = MaxTries
     /\ rx' = "ok"
-    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, lost>>
+    /\ UNCHANGED <<committed, wire, sx, cut, cuts, tries, ended, lost>>
 
 \* Read: the sender reads the next frame: an answer counts the transfer
-\* done; an end or a reset ends that session (it serves on). Mutant
+\* done and the sender ends the session cleanly; an end or a reset ends
+\* that session (it serves on). Mutant
 \* "sender-gives-up" (the rejected design: a --once sender that read a
 \* reset after its last byte exits as if delivered).
 Read ==
@@ -142,6 +150,7 @@ Read ==
     /\ sx' = CASE Head(wire) = "answer"                               -> "done"
                [] Head(wire) = "reset" /\ Mutant = "sender-gives-up" -> "done"
                [] OTHER                                             -> sx
+    /\ ended' = (ended \/ Head(wire) = "answer")
     /\ wire' = Tail(wire)
     /\ UNCHANGED <<committed, rx, cut, cuts, tries, lost>>
 
