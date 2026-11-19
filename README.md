@@ -129,9 +129,12 @@ ends"), and the sender a machine certificate issued for another relay.
 ## Flags and exit codes
 
 `send`: `--once` (exit after the first complete transfer), `--direct
-on|off`, `--machine-credential <file>`, `--relay <address>` (default
-`grpc.nfltr.xyz:443`, or `$NFLTR_SEND_RELAY`), `--relay-http`,
+on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http`,
 `--relay-pin <sha256>` (a private relay's certificate).
+The relay is `--relay`, else `$NFLTR_SEND_RELAY`, else the one `nfltr config
+set-relay` saved (with its HTTPS URL and certificate pin; nothing of an
+account is read), else `grpc.nfltr.xyz:443`; an error connecting names the
+relay and `--relay`.
 `receive`: `--to <dir>`, `--address-file <file>` (default stdin),
 `--tries <n>` (default 10, each session resuming the last; after a
 commit whose session was cut before the sender read the answer, the
@@ -231,8 +234,11 @@ $ v=<version>; f=nfltr-send_linux_amd64
 $ for x in $f SHA256SUMS SHA256SUMS.sshsig; do curl -fsSLO https://github.com/nfltr/send/releases/download/$v/$x; done
 $ curl -fsSLO https://raw.githubusercontent.com/nfltr/send/main/release/allowed_signers
 $ ssh-keygen -Y verify -f allowed_signers -I nfltr-release -n nfltr-release -s SHA256SUMS.sshsig < SHA256SUMS
-$ grep " $f\$" SHA256SUMS | sha256sum -c && chmod +x $f && mv $f ~/bin/nfltr-send
+$ grep " $f\$" SHA256SUMS | sha256sum -c && mkdir -p ~/.local/bin && install -m 755 $f ~/.local/bin/nfltr-send
 ```
+
+`~/.local/bin` is where nfltr's installer puts `nfltr`; add it to `PATH` if
+it is not there yet.
 
 On macOS, which has no `sha256sum`, check the sum with `shasum -a 256 -c` instead.
 

@@ -50,14 +50,7 @@ func machinePath(name string) string {
 	if name != "" {
 		return name
 	}
-	cfg := os.Getenv("NFLTR_CONFIG")
-	if cfg == "" {
-		cfg = "nfltr.json"
-		if home, err := os.UserHomeDir(); err == nil {
-			cfg = filepath.Join(home, ".config", "nfltr", "nfltr.json")
-		}
-	}
-	return filepath.Join(filepath.Dir(cfg), "machine.json")
+	return filepath.Join(filepath.Dir(nfltrConfigPath()), "machine.json")
 }
 
 // loadMachine reads path and machine.key beside it.
@@ -97,7 +90,7 @@ func (m *machine) forRelay(addr string) error {
 		host = h
 	}
 	if strings.TrimPrefix(host, "grpc.") != strings.TrimPrefix(m.saved.RelayHost, "grpc.") {
-		return fmt.Errorf("%s: the machine certificate is for relay %s, not %s", m.path, m.saved.RelayHost, addr)
+		return fmt.Errorf("%s: the machine certificate is for relay %s, not %s: name its relay with --relay (default: the relay nfltr config set-relay saved, else %s)", m.path, m.saved.RelayHost, addr, defaultRelay)
 	}
 	return nil
 }

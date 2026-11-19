@@ -33,6 +33,8 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(serve(context.Background(), nfnet.Config{Relay: "relay.test", AgentRelay: relay, Plaintext: true}, nfnet.DirectOn, nil, src, true, os.Stdout))
 	}
+	// No test reads this machine's nfltr config (its saved relay).
+	_ = os.Setenv("NFLTR_CONFIG", filepath.Join(os.TempDir(), "nfltr-send-test-no-config", "nfltr.json"))
 	os.Exit(m.Run())
 }
 
