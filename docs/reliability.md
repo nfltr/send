@@ -183,8 +183,28 @@ whole matrix (`make reliability`, 55 cells, 275 transfers): 260 right,
 after a transfer completed, a `--once` sender whose earlier direct-path
 receiver was killed takes more than 10 s to exit, its listener's close
 waiting for that dead receiver's direct session (relay client
-`nfnet.Listener.Close`, `agent.directServer.stop`). Open, not in this
-fix.
+`nfnet.Listener.Close`, `agent.directServer.stop`).
+
+Lane SENDCUT found the cause (not a v0.23.6 regression: send v0.1.4 with
+client v0.23.5 fails the same cells 9 of 9; the matrix's sender bound went
+from 30 s to 10 s in `05d28f5`, the baseline ran with 30 s). The sender
+exited 21 s after its transfer: the listener's close reset the dead
+session's Conn, but `peerlink.Join`'s copy toward the dead peer waited on
+its window and never read that reset, so the session held the agent's
+drain to its bound (5 s); then the agent's three stops each waited their
+own 5 s grace for the ABORT's answer (5 + 5 + 1 + 5 s). Fixed in the relay
+client (land/SENDCUT): a target's reset resets its direct session at once,
+the drain skips a session already reset, and the grace runs once per
+session (tests `TestDirectTargetResetResetsTheSession`,
+`TestDirectStopsWaitOneGrace`). With it (nfltr-send at d16a050, the relay
+client replaced locally): the `cut-receiver-*-direct` sender exits 4.8 s
+after the receiver, 15 of 15; the whole matrix, 275 of 275 right, 0 corrupted.
+
+nfltr-send v0.1.5 (the release, client v0.23.6; nfltr and nfltr-relay
+v2.1.73, same machine, 2026-11-19), the whole matrix: 258 of 275 right, 0 corrupted; the 17 failures all
+`sender_hang`: the 15 `cut-receiver-*-direct` and two direct transfers
+without a fault (`net-100mbit-150ms-loss1-direct`, `large-file-direct`),
+the same stop waiting on a slow direct session.
 
 ## Rerun
 
