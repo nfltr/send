@@ -33,9 +33,9 @@ its transfers.
 A run passes when the receiver exits as expected (0, or 12 for
 `anon-no-udp`), the received tree equals the sent one (or is empty when
 nothing may be committed), no stage is left after a commit, and a
-`--once` sender exits 0 within 30 s of a completed transfer. Failure
+`--once` sender exits 0 within 10 s of a completed transfer. Failure
 reasons: `exit_<n>`, `timeout`, `sender_hang` (a `--once` sender still
-serving 30 s after the receiver committed), `sender_exit_<n>`,
+serving 10 s after the receiver committed), `sender_exit_<n>`,
 `committed_on_failure` (a receive that exited non-zero left the offer's
 files, right ones, in place; `first_` when it was the receive cut by the
 sender's death), `missing`, `stage_left`, and `corrupt`: a visible file

@@ -343,7 +343,7 @@ def run_cell(c, logdir):
             return dict(row, ok=False, reason=f"exit_{rc}")
         if want == 0:
             row["mbit"] = round(size * 8 / secs / 1e6, 1)
-            sr = 0 if s is None else wait(s, 30)
+            sr = 0 if s is None else wait(s, 10)
             if sr != 0:
                 return dict(row, ok=False, reason="sender_hang" if sr is None else f"sender_exit_{sr}")
         return dict(row, ok=True, reason=None)
@@ -403,19 +403,23 @@ def aggregate(rows):
     agg = []
     for name, rs in by.items():
         ok = [x for x in rs if x["ok"]]
+        # The receive was right (every byte, exit as expected) though the
+        # sender misbehaved after it: the medians count these runs too.
+        got = [x for x in rs if x["ok"] or (str(x["reason"]).startswith("sender_") and x.get("rc") is not None)]
         reasons = {}
         for x in rs:
             if not x["ok"]:
                 reasons[x["reason"]] = reasons.get(x["reason"], 0) + 1
         paths = {}
-        for x in ok:
+        for x in got:
             k = "+".join(x.get("paths") or [])
             paths[k] = paths.get(k, 0) + 1
         agg.append({"cell": name, "runs": len(rs), "pass": len(ok), "pass_rate": round(len(ok) / len(rs), 3),
-                    "median_s": med([x.get("seconds") for x in ok]), "median_mbit": med([x.get("mbit") for x in ok]),
-                    "min_mbit": min([x["mbit"] for x in ok if x.get("mbit")], default=None),
-                    "max_mbit": max([x["mbit"] for x in ok if x.get("mbit")], default=None),
-                    "median_written_frac": med([x["written"] / x["bytes"] for x in ok if x.get("written") is not None and x.get("fault")]),
+                    "received": len(got), "median_s": med([x.get("seconds") for x in got]),
+                    "median_mbit": med([x.get("mbit") for x in got]),
+                    "min_mbit": min([x["mbit"] for x in got if x.get("mbit")], default=None),
+                    "max_mbit": max([x["mbit"] for x in got if x.get("mbit")], default=None),
+                    "median_written_frac": med([x["written"] / x["bytes"] for x in got if x.get("written") is not None and x.get("fault")]),
                     "paths": paths, "failures": reasons})
     return agg
 
@@ -433,10 +437,10 @@ def emit(path, row):
 
 
 def table(agg):
-    lines = ["| cell | pass | median s | median Mbit/s (min-max) | paths | failures |", "|---|---|---|---|---|---|"]
+    lines = ["| cell | pass | received | median s | median Mbit/s (min-max) | paths | failures |", "|---|---|---|---|---|---|---|"]
     for a in agg:
         mb = "-" if a["median_mbit"] is None else f"{a['median_mbit']} ({a['min_mbit']}-{a['max_mbit']})"
-        lines.append(f"| {a['cell']} | {a['pass']}/{a['runs']} | {a['median_s']} | {mb} | "
+        lines.append(f"| {a['cell']} | {a['pass']}/{a['runs']} | {a['received']}/{a['runs']} | {a['median_s']} | {mb} | "
                      + ", ".join(f"{k or '-'} {v}" for k, v in a["paths"].items()) + " | "
                      + (", ".join(f"{k} {v}" for k, v in a["failures"].items()) or "-") + " |")
     return "\n".join(lines) + "\n"
@@ -444,6 +448,13 @@ def table(agg):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "matrix"
+    if mode == "summarize":  # rel.py summarize <runs.jsonl> <out dir>: cells.jsonl and the table again
+        agg = aggregate([json.loads(x) for x in open(sys.argv[2])])
+        with open(f"{sys.argv[3]}/cells.jsonl", "w") as f:
+            f.writelines(json.dumps(a) + "\n" for a in agg)
+        with open(f"{sys.argv[3]}/summary.md", "w") as f:
+            f.write(table(agg))
+        return
     os.makedirs(f"{OUT}/logs", exist_ok=True)
     net_up()
     relay = relay_up()
