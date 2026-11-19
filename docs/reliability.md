@@ -206,6 +206,14 @@ v2.1.73, same machine, 2026-11-19), the whole matrix: 258 of 275 right, 0 corrup
 without a fault (`net-100mbit-150ms-loss1-direct`, `large-file-direct`),
 the same stop waiting on a slow direct session.
 
+nfltr-send at `5688e19` (built from the checkout: relay client v0.23.7
+with SENDCUT's fix, link v0.12.17, relay-core v0.16.6; nfltr and
+nfltr-relay v2.1.73), on the nfltr CI machine (16 CPUs, shared with other
+jobs, load average 7 to 63), 2026-11-19, the whole matrix in 71 minutes:
+275 of 275 right, 0 corrupted. Every `cut-receiver-*-direct` passed, and
+so did the two direct cells v0.1.5 failed. One 4 GiB file: 2784 Mbit/s
+direct, 2770 relayed (medians); 10,000 files of 4 KiB: 158 Mbit/s each.
+
 ## Rerun
 
 ```console
