@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/nfltr/blake3 v1.5.0
 	github.com/nfltr/relay-core v0.16.0
-	github.com/nfltr/relay/client v0.23.5
+	github.com/nfltr/relay/client v0.23.6
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.48.0
 )
@@ -22,7 +22,6 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jackpal/gateway v1.2.0 // indirect
-	github.com/jackpal/go-nat-pmp v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nfltr/link v0.12.16 // indirect

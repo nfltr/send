@@ -110,7 +110,7 @@ receivers, two faults: 1250 states.
 ### End.tla
 
 `End.tla` models the end of a transfer, both processes and the session
-between them (lane SENDFIX, docs/reliability.md "Open defects"): the
+between them (lane SENDFIX, docs/reliability.md "Defects found and fixed"): the
 receiver commits, writes its answer, closes the session and exits; the
 sender reads the answer and counts the transfer done (a `--once` sender
 exits). A close delivers what was written before it, then a clean end; a

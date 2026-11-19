@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -62,6 +63,46 @@ func TestOnceExitsAfterTheReceiversEnd(t *testing.T) {
 		}
 		if el > 10*time.Second {
 			t.Fatalf("run %d: receive took %v: it waited for a sender that had exited", i, el)
+		}
+	}
+}
+
+// TestOnceRelayedSenderReadsTheAnswer (lane SENDFIX, docs/reliability.md
+// "Defects found and fixed" 1: 74 of 130 relayed runs; spec End.tla Told,
+// mutant close-cuts): a --once sender reads the receiver's answer on the
+// relayed path and exits. The receiver's close cut its nf1 data
+// connection at once, with the answer's last frames and the session's
+// CLOSE still unwritten: the relay reset the session and the sender logged
+// "session reset by the peer", serving on.
+func TestOnceRelayedSenderReadsTheAnswer(t *testing.T) {
+	r := anonRelay(t, true)
+	dir := offer(t)
+	for i := range 20 {
+		src, err := xfer.NewSource([]string{dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pr, pw := io.Pipe()
+		served := make(chan int, 1)
+		go func() {
+			served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
+			_ = pw.Close()
+		}()
+		addr, err := readLine(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _, _ = io.Copy(io.Discard, pr) }()
+		if code := receiveFrom(t, r, addr, nfnet.DirectOff, t.TempDir()); code != 0 {
+			t.Fatalf("run %d: receive exit %d", i, code)
+		}
+		select {
+		case code := <-served:
+			if code != 0 {
+				t.Fatalf("run %d: serve exit %d", i, code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("run %d: --once sender still serving after the receiver committed", i)
 		}
 	}
 }

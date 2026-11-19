@@ -47,7 +47,9 @@ type Progress func(written int64)
 
 // Receive takes one transfer over a session into dir. It returns the
 // answer it sent; an error before the answer (a cut session) leaves the
-// stage for the next Receive of the same offer to resume from.
+// stage for the next Receive of the same offer to resume from. A
+// committed transfer returns no error, whether or not its answer reached
+// the sender.
 func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	c := newConn(rw)
 	t, raw, err := c.read(nil)
@@ -81,10 +83,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 		if err := r.commit(); err != nil {
 			a = Answer{Message: err.Error()}
 		}
-		if err := c.writeJSON(frameAnswer, a); err != nil {
-			return a, err
-		}
-		return a, c.flush()
+		return answer(c, a)
 	}
 	parts, err := r.parts()
 	if err != nil {
@@ -100,10 +99,21 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if err != nil {
 		return a, err
 	}
-	if err := c.writeJSON(frameAnswer, a); err != nil {
-		return a, err
+	return answer(c, a)
+}
+
+// answer sends a to the sender. A commit stands when its answer does not
+// go (the session cut first): the receive is done, nil (spec End.tla Fail,
+// ExitRight; TestCommitStandsWhenTheAnswerDoesNotGo).
+func answer(c *conn, a Answer) (Answer, error) {
+	err := c.writeJSON(frameAnswer, a)
+	if err == nil {
+		err = c.flush()
 	}
-	return a, c.flush()
+	if a.OK {
+		return a, nil
+	}
+	return a, err
 }
 
 type receiver struct {

@@ -1020,3 +1020,40 @@ func TestResumeSendsOnlyTheBadChunk(t *testing.T) {
 		t.Fatal("differs from the source")
 	}
 }
+
+// answerCut fails every Write after the first (the want), as a session cut
+// before the receiver's answer went.
+type answerCut struct {
+	net.Conn
+	writes int
+}
+
+func (c *answerCut) Write(p []byte) (int, error) {
+	if c.writes++; c.writes > 1 {
+		_ = c.Conn.Close()
+		return 0, io.ErrClosedPipe
+	}
+	return c.Conn.Write(p)
+}
+
+// TestCommitStandsWhenTheAnswerDoesNotGo (lane SENDFIX, docs/reliability.md
+// "Open defects" 2; spec End.tla ExitRight, mutant exit-on-answer): a
+// receive that committed returns its answer and no error when the session
+// was cut before the answer went. It returned the write's error, so the
+// receive retried the dead address and exited 3 with every file in place,
+// and a receive of a new address then refused (the names were taken).
+func TestCommitStandsWhenTheAnswerDoesNotGo(t *testing.T) {
+	src := tree(t, 1<<20)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	x, y := net.Pipe()
+	go func() { _, _, _ = s.Serve(x); _ = x.Close() }()
+	a, err := Receive(&answerCut{Conn: y}, dst, nil)
+	if err != nil || !a.OK {
+		t.Fatalf("receive: %+v, %v; want the commit's answer and no error", a, err)
+	}
+	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+		t.Fatal("what landed differs from the source")
+	}
+}
