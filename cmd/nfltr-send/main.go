@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -188,7 +189,15 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	files, bytes := src.Files()
 	fmt.Fprintf(os.Stderr, "serving %d %s, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, filesWord(files), bytes)
 	fmt.Fprintln(out, ln.Address())
-	done := make(chan struct{}, 1)
+	// A --once transfer ends the listener itself; done closes once that
+	// Close returned: the process may exit only then. Close resets what is
+	// still open and returns once each peer answered; a second Close (the
+	// deferred one) returns at once, so a sender that exited on the
+	// listener's first error left a receiver waiting for its end's
+	// acknowledgement until its 30 s bound (TestOnceExitsAfterTheReceiversEnd).
+	var ending atomic.Bool
+	var end sync.Once
+	done := make(chan struct{})
 	sessions := newLimiter(maxSessions)
 	go func() {
 		<-ctx.Done()
@@ -200,10 +209,9 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 			if ctx.Err() != nil {
 				return 0
 			}
-			select {
-			case <-done:
+			if ending.Load() {
+				<-done
 				return 0
-			default:
 			}
 			return fail(3, enrolHint(err, anon))
 		}
@@ -222,8 +230,12 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 				slog.Info("transfer done", "files", a.Files, "bytes", a.Bytes, "sent", sent, "seconds", time.Since(t0).Seconds())
 				fmt.Fprintf(os.Stderr, "sent %d %s, %d bytes (%d this session) in %.1f s\n", a.Files, filesWord(a.Files), a.Bytes, sent, time.Since(t0).Seconds())
 				if once {
-					done <- struct{}{}
-					_ = ln.Close()
+					end.Do(func() {
+						_ = c.Close() // this session's clean end first: the listener's Close resets what is open
+						ending.Store(true)
+						_ = ln.Close()
+						close(done)
+					})
 				}
 			}
 		})
