@@ -29,11 +29,11 @@ tlc End End -coverage 1
 zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module End: 0$/ && a != "<Close" {print}' "$tmp/End.out")
 if grep -q 'No error has been found' "$tmp/End.out" && [ -z "$zero" ]; then echo "ok   End: invariants and Done hold, every action taken"
 else echo "FAIL End"; cat "$tmp/End.out"; fail=1; fi
-for c in WitnessCommittedCut WitnessTold; do
+for c in WitnessCommittedCut WitnessTold WitnessRetold; do
 	tlc End "End$c"
 	if grep -q "Invariant $c is violated" "$tmp/End$c.out"; then echo "ok   End $c violated (reachable)"; else echo "FAIL End $c not violated"; fail=1; fi
 done
-for m in close-cuts exit-on-answer; do
+for m in close-cuts exit-on-answer no-retell sender-gives-up; do
 	tlc End "End-mutant-$m"
 	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/End-mutant-$m.out"); then echo "ok   End mutant $m caught ($v)"; else echo "FAIL End mutant $m not caught"; fail=1; fi
 done

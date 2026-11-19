@@ -109,30 +109,41 @@ receivers, two faults: 1250 states.
 
 ### End.tla
 
-`End.tla` models the end of a transfer, both processes and the session
-between them (lane SENDFIX, docs/reliability.md "Defects found and fixed"): the
-receiver commits, writes its answer, closes the session and exits; the
-sender reads the answer and counts the transfer done (a `--once` sender
-exits). A close delivers what was written before it, then a clean end; a
-cut (the network, the sender's death, the relay) delivers some prefix of
-what was written, then a reset, and fails the receiver's later writes.
-One cut at most: 30 states. Not traced (two processes; see "Traces").
+`End.tla` models the end of a transfer, both processes and the sessions
+between them (lanes SENDFIX and SENDONCE, docs/reliability.md "Defects
+found and fixed"): the receiver commits, writes its answer, closes the
+session and exits; the sender reads the answer and counts the transfer
+done (a `--once` sender exits). A close delivers what was written before
+it, then a clean end, and returns once the sender read it all; a cut (the
+network, the sender's death, the relay) delivers some prefix of what was
+written, then a reset, and fails the receiver's later writes and its
+close. A receiver that committed and whose close did not return clean
+dials the address again and answers the manifest at once (`Retell`), up to
+`MaxTries` dials (receive's `--tries`); a dial while the sender no longer
+serves fails (`Unserved`), and after the last the receiver exits ok all the
+same (`GiveUp`). Two cuts, three dials: 648 states. Not traced (two
+processes; see "Traces").
 
 | invariant / property | meaning |
 |---|---|
 | `ExitRight` | a receiver exits ok exactly when it committed |
-| `Told` | a sender whose session was not cut ends only on the receiver's answer |
-| `Done` | both ends finish; with no cut the sender read the answer |
+| `Told` | a reset reaches the sender only from a cut |
+| `Confirmed` | a sender ends only on an answer, so only once the receiver committed |
+| `Retold` | with more dials than cuts, a receiver exits ok only once the sender read an answer |
+| `Done` | the receiver exits; once it committed, the sender ends |
 
 | witness (violated) | shows |
 |---|---|
 | `WitnessCommittedCut` | a receiver that committed, whose session was cut before its answer reached the sender, exits ok |
 | `WitnessTold` | the sender reads the answer |
+| `WitnessRetold` | a cut lost the committed receiver's answer, and the sender ended all the same (told on a later session) |
 
 | mutant | the failure it plants | caught by |
 |---|---|---|
 | `close-cuts` | the receiver's close cuts the nf1 data connection at once, its unwritten frames lost, and the relay resets the session (defect 1: a `--once` sender read "session reset by the peer" and served on in 74 of 130 relayed runs) | `Told` |
 | `exit-on-answer` | a receiver that committed exits failed because its answer did not go (defect 2: exit 3, and the next receive of a new address refused, the names taken) | `ExitRight` |
+| `no-retell` | a receiver that committed exits ok when its session was cut before its answer arrived, telling no one (defect 3: a link drop longer than the session's liveness left the `--once` sender serving, 4 of 20 relayed drops) | `Retold` |
+| `sender-gives-up` | the rejected design: a `--once` sender that reads a reset after its last byte exits as if delivered | `Confirmed` |
 
 ## Environment assumptions
 
@@ -163,7 +174,7 @@ One cut at most: 30 states. Not traced (two processes; see "Traces").
 | `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent`; `xfer/sync_*.go` (the files synced before it) |
 | `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
 | `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
-| `End.tla` `Answer`, `Close`, `Exit`, `Fail` | `xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`); `cmd/nfltr-send` `receiveTo`, `receiveOnce` (the close, the exit status); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
+| `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
 | `End.tla` `Read` | `xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
 | `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `xfer/trace_on.go` (the recorder), `xfer/trace_off.go`; the call sites in `xfer/receive.go` (behind `traceOn`) |
 
