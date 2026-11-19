@@ -126,18 +126,25 @@ model [`spec/End.tla`](../spec/README.md), a mutant for each).
    than the session's liveness, right after the receiver committed, made
    the relay reset the session before the receiver's answer reached the
    sender; the receiver exited 0 with every file, and the sender, never
-   told, served on. Fix: the receiver takes its session's close as the
-   sender's confirmation (it returns clean once the sender read every
-   byte, the answer with them). A committed receive whose close did not
-   return clean dials the address again, within its `--tries` (the
+   told, served on. Fix: the sender ends a session cleanly once it read
+   the answer, and the receiver, after its answer, waits for that end
+   (end to end: under TLS, the sender's close_notify) as the sender's
+   word. Its own close is no such word: it returns once the relay has the
+   bytes (a first fix that trusted it still left a sender serving in the
+   soak; the model's mutant `close-confirms`). A committed receive whose
+   session was cut before the sender's end dials the address again,
+   within its `--tries` (the
    pauses of a resume: 1, 2, ... 5 s), and answers the manifest at once
    with the commit's answer (`xfer.Retell`; the sender already takes an
    answer in place of the want), so the sender reads it and ends. The
    receive exits 0 either way (its files are in place); after the last
    try it says the sender did not confirm. Test
-   `TestOnceSenderToldAfterACutAnswer` (the receiver's relay connections
-   cut under its answer; before the fix the sender logged `session reset
-   by the peer` and served on); model `Retold`, mutant `no-retell`.
+   `TestOnceSenderToldAfterACutAnswer` (under the receiver's answer,
+   `receiver`: its relay connections closed; `sender`: the sender's agent
+   link silenced, the soak's drop, the relay resetting the sender's
+   session when its liveness ran out; before the fix the sender logged
+   `session reset by the peer` and served on in both); model `Retold`,
+   mutants `no-retell` and `close-confirms`.
 
    Rejected: a `--once` sender that, after a reset following its last
    byte, waits a while for a new session and then exits with a

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,14 +125,86 @@ func (c cutAnswer) Write(p []byte) (int, error) {
 	return c.ReadWriter.Write(p)
 }
 
+// silencer forwards TCP to a relay address; silence makes every
+// connection it forwards so far drop what crosses it, both ways, without
+// closing (a link that stops carrying, as a drop does: the ends find out
+// from their liveness). Later connections pass.
+type silencer struct {
+	mu    sync.Mutex
+	quiet []*atomic.Bool
+}
+
+func newSilencer(t *testing.T, to string) (*silencer, string) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	s := &silencer{}
+	go func() {
+		for {
+			a, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			b, err := net.Dial("tcp", to)
+			if err != nil {
+				_ = a.Close()
+				continue
+			}
+			q := new(atomic.Bool)
+			s.mu.Lock()
+			s.quiet = append(s.quiet, q)
+			s.mu.Unlock()
+			pipe := func(dst, src net.Conn) {
+				defer dst.Close() //nolint:errcheck
+				defer src.Close() //nolint:errcheck
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := src.Read(buf)
+					if n > 0 && !q.Load() {
+						if _, werr := dst.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}
+			go pipe(a, b)
+			go pipe(b, a)
+		}
+	}()
+	return s, ln.Addr().String()
+}
+
+func (s *silencer) silence() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, q := range s.quiet {
+		q.Store(true)
+	}
+}
+
 // TestOnceSenderToldAfterACutAnswer (lane SENDONCE, docs/reliability.md
 // "Defects found and fixed" 3: 4 of 20 relayed link drops in SENDFIX's
 // soak; spec End.tla Retold, mutant no-retell): the relayed session is cut
 // after the receiver committed and before its answer went. The receiver
 // exits 0 (its files are in place) and the --once sender still ends: the
-// receiver dials the address again and answers. It served on.
+// receiver dials the address again and answers. It served on. "receiver":
+// the receiver's connections to the relay closed; "sender": the sender's
+// agent link silenced (the soak's drop: the receiver's own close returned
+// clean, the relay reset the sender's session once its liveness ran out).
 func TestOnceSenderToldAfterACutAnswer(t *testing.T) {
+	for _, side := range []string{"receiver", "sender"} {
+		t.Run(side, func(t *testing.T) { onceToldAfterACut(t, side) })
+	}
+}
+
+func onceToldAfterACut(t *testing.T, side string) {
 	r := anonRelay(t, true)
+	sil, agentRelay := newSilencer(t, r.GRPC)
 	dir := offer(t)
 	src, err := xfer.NewSource([]string{dir})
 	if err != nil {
@@ -140,7 +213,7 @@ func TestOnceSenderToldAfterACutAnswer(t *testing.T) {
 	pr, pw := io.Pipe()
 	served := make(chan int, 1)
 	go func() {
-		served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
+		served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: agentRelay, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
 		_ = pw.Close()
 	}()
 	addr, err := readLine(pr)
@@ -166,6 +239,10 @@ func TestOnceSenderToldAfterACutAnswer(t *testing.T) {
 	var once sync.Once
 	cut := func() {
 		once.Do(func() {
+			if side == "sender" {
+				sil.silence()
+				return
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			for _, c := range conns {
@@ -189,7 +266,7 @@ func TestOnceSenderToldAfterACutAnswer(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("serve exit %d", code)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("--once sender still serving after the receiver committed and exited")
 	}
 }

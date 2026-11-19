@@ -430,8 +430,8 @@ func wait(ctx context.Context, try int) {
 	}
 }
 
-// unconfirmed is a committed receive whose session's close did not
-// return clean: the sender may not have read the answer.
+// unconfirmed is a committed receive whose session was cut before the
+// sender's clean end: the sender may not have read the answer.
 type unconfirmed struct{ error }
 
 func (e unconfirmed) Unwrap() error { return e.error }
@@ -462,12 +462,23 @@ func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfne
 	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
 	defer stop()
 	a, err := receive(c, dir, progress)
-	// The close returns clean once the sender read every byte, the answer
-	// with them; else a committed receive tells it again (receiveTo).
-	if cerr := c.Close(); err == nil && a.OK && cerr != nil {
-		err = unconfirmed{cerr}
+	if err == nil && a.OK {
+		if eerr := senderEnd(c); eerr != nil {
+			err = unconfirmed{eerr} // receiveTo tells the sender again
+		}
 	}
+	_ = c.Close()
 	return a, err
+}
+
+// senderEnd waits for the sender's clean end of the session, its word that
+// it read the answer (it ends a session cleanly once Serve returned; spec
+// End.tla Exit). The receiver's own close is no such word: it returns once
+// the relay has the bytes, and the relay can still reset the sender's
+// session under the answer (mutant close-confirms).
+func senderEnd(c *nfnet.Conn) error {
+	_, err := io.Copy(io.Discard, c)
+	return err
 }
 
 // retellOnce dials t again and answers its manifest with a, the answer
@@ -482,9 +493,10 @@ func retellOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet
 	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
 	defer stop()
 	err = xfer.Retell(c, a)
-	if cerr := c.Close(); err == nil {
-		err = cerr
+	if err == nil {
+		err = senderEnd(c)
 	}
+	_ = c.Close()
 	return err
 }
 
