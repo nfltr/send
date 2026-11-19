@@ -7,7 +7,10 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: check spec spec-traces release release-sign release-verify release-dryrun
+.PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak
+# make ci: the check workflow's Linux jobs, for a CI runner of our own.
+ci: check spec spec-traces release-dryrun
+
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	go vet ./...
@@ -38,3 +41,17 @@ release-verify:
 	sh scripts/release.sh verify
 release-dryrun:
 	sh scripts/release.sh dryrun
+
+# Reliability (bench/rel/README.md), on a Linux machine with docker: make
+# reliability runs the matrix (every cell REL_N times, default 5), make
+# reliability-soak random cells with faults for REL_SOAK_S seconds (default
+# 86400). Released binaries by default (SEND_VERSION, NFLTR_VERSION), or
+# REL_BIN=<dir> with nfltr-send, nfltr and nfltr-relay. Exit 0 only when
+# every transfer passed.
+SEND_VERSION ?= v0.1.3
+NFLTR_VERSION ?= v2.1.73
+export SEND_VERSION NFLTR_VERSION
+reliability:
+	sh bench/rel/run.sh matrix
+reliability-soak:
+	sh bench/rel/run.sh soak
