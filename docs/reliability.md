@@ -209,9 +209,9 @@ the same stop waiting on a slow direct session.
 ## Rerun
 
 ```console
-$ make reliability                             # the matrix, about 80 minutes
+$ make reliability                             # the matrix (nfltr-send from this checkout), about 80 minutes
 $ make reliability-soak REL_SOAK_S=1800        # 30 minutes of random cells with faults
-$ make reliability SEND_VERSION=v0.1.4 NFLTR_VERSION=v2.1.74
+$ make reliability SEND_VERSION=v0.1.5          # a released nfltr-send
 ```
 
 Each run writes one JSON line per transfer, one per cell and a summary

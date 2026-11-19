@@ -45,10 +45,10 @@ release-dryrun:
 # Reliability (bench/rel/README.md), on a Linux machine with docker: make
 # reliability runs the matrix (every cell REL_N times, default 5), make
 # reliability-soak random cells with faults for REL_SOAK_S seconds (default
-# 86400). Released binaries by default (SEND_VERSION, NFLTR_VERSION), or
-# REL_BIN=<dir> with nfltr-send, nfltr and nfltr-relay. Exit 0 only when
-# every transfer passed.
-SEND_VERSION ?= v0.1.3
+# 86400). nfltr-send built from this checkout (or the released SEND_VERSION
+# when set), nfltr and nfltr-relay NFLTR_VERSION from the installer, or
+# REL_BIN=<dir> with all three. Exit 0 only when every transfer passed.
+SEND_VERSION ?=
 NFLTR_VERSION ?= v2.1.73
 export SEND_VERSION NFLTR_VERSION
 reliability:

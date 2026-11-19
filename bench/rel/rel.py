@@ -110,7 +110,7 @@ def dataset(kind, size=0):
         name = "large"
     p = f"{W}/data/{name}"
     if not os.path.exists(p):
-        gen = f"{SRC}/../scale/gen.sh"
+        gen = f"{SRC}/gen.sh"  # bench/scale/gen.sh, copied beside rel.py by run.sh
         if kind == "file":
             sh(f"sh {gen} file {p} {size}")
         elif kind == "large":
