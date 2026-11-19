@@ -58,14 +58,14 @@ The same path carries 2.9 Gbit/s on four TCP streams, so going further
 would need parallel connections, not larger windows.
 
 **Rate-capped paths.** Under a netem cap of 100 Mbit/s at 95 and 159 ms,
-the direct path takes 68 % and 43 % of the cap, while the relayed path
-(TCP) takes 92-93 %. This is the same before and after the fix, so it is
-not the window. The direct receiver took in 758,915 UDP datagrams for the
-1 GiB file, about one per packet of data, so the shortfall is not
-retransmission. Without the cap, on the same paths, the direct path is the
-faster of the two. Why QUIC's sender stays below a rate-limited bottleneck
-is left for the QUIC transport (quic-go's congestion control and pacing),
-and is noted here so a capped link is not mistaken for this window.
+the direct path took 68 % and 43 % of the cap in these runs, while the
+relayed path (TCP) took 92-93 %. That the before and after runs match does
+not show that the window is not the cause: on a lab path with the same cap
+and v0.1.3 at both ends, the direct path took 93.1 Mbit/s at 95 ms (one TCP
+stream: 94.5) and 89.2 at 159 ms (TCP: 93.6) in 7 of 8 runs, 55.0 in the
+other, while a v0.1.2 receiver gave 38.6 at 159 ms, and a 1 MiB window
+predicts 66 % and 42 %. Why these capped runs look like a 1 MiB window is
+not yet known; they are to be rerun with each end's binary recorded.
 
 ## Machines and paths
 
@@ -115,8 +115,11 @@ writes 1.1 GB/s (`dd conv=fdatasync`, 10 GiB and 100 GiB). A reads the
 - **100 GiB, address to received, before**: 4717 s (22.8 MB/s). This was one run,
   alongside some of the 10 GiB and mixed runs. Each session was bound by
   its own window, not by the path.
-- **100 GiB, after**: the resume run's two receives moved 53.7 GB in 602 s
-  (89 MB/s) and 53.7 GB in 704 s (76 MB/s); see test 4.
+- **100 GiB, after**: no uninterrupted run yet. The resume run's two
+  receives moved 53.7 GB in 602 s (89 MB/s) and 53.7 GB in 704 s (76 MB/s);
+  see test 4. Those are halves of a run whose receiver was killed and
+  restarted, not a sustained rate for 100 GiB, and why the second half was
+  slower is not measured.
 - **Commit**: the receiver's one `syncfs(2)` took 0.09 s for the
   100,000 x 4 KiB files. This is from one run under
   `strace -e trace=syncfs -T`. strace slowed that run eightfold, so more of
