@@ -191,6 +191,15 @@ most about 1 MiB per round trip (191 Mbit/s over 36 ms; 41 Mbit/s over
 With the fix the same transfers ran at 757 and 265 Mbit/s; a release built
 on it follows. Resume re-sends only what is missing plus the bad chunk.
 
+## Reliability
+
+[`docs/reliability.md`](docs/reliability.md): a rerunnable matrix (rate,
+round trip, loss, direct and relayed, cut and resume, many files, a 4 GiB
+file, no account, a full disk) and a soak, each transfer judged by exit
+codes and every received byte. On 2026-11-19 (v0.1.3) every one of 275
+receives was right and none corrupted; two open defects in how a relayed
+transfer ends are listed there.
+
 ## Operating notes
 
 On Linux quic-go, which carries the direct path, asks for UDP socket
