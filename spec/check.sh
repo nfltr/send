@@ -1,5 +1,5 @@
 #!/bin/sh
-# check.sh: TLC on Resume.tla and Commit.tla (spec/README.md): the model with -coverage 1
+# check.sh: TLC on Resume.tla, End.tla and Commit.tla (spec/README.md): the model with -coverage 1
 # (exit 1 on an action no state took), each witness violated, each mutant
 # caught. java and tla2tools.jar from $TLA_JAVA and $TLA_JAR, else
 # github.com/nfltr/link's scripts/fetch-tla.sh output (the pinned versions).
@@ -23,6 +23,19 @@ done
 for m in accept-unverified resume-unverified skip-missing resend-verified root-unbound commit-cut no-final-check; do
 	tlc Resume "mutant-$m"
 	if v=$(grep -E -o '(Invariant|Action property) [A-Za-z]+ (of the PROPERTIES )?is violated' "$tmp/mutant-$m.out"); then echo "ok   mutant $m caught ($v)"; else echo "FAIL mutant $m not caught"; fail=1; fi
+done
+tlc End End -coverage 1
+# zero coverage only in Close's mutant branch (close-cuts) and Over's subscript
+zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module End: 0$/ && a != "<Close" {print}' "$tmp/End.out")
+if grep -q 'No error has been found' "$tmp/End.out" && [ -z "$zero" ]; then echo "ok   End: invariants and Done hold, every action taken"
+else echo "FAIL End"; cat "$tmp/End.out"; fail=1; fi
+for c in WitnessCommittedCut WitnessTold; do
+	tlc End "End$c"
+	if grep -q "Invariant $c is violated" "$tmp/End$c.out"; then echo "ok   End $c violated (reachable)"; else echo "FAIL End $c not violated"; fail=1; fi
+done
+for m in close-cuts exit-on-answer; do
+	tlc End "End-mutant-$m"
+	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/End-mutant-$m.out"); then echo "ok   End mutant $m caught ($v)"; else echo "FAIL End mutant $m not caught"; fail=1; fi
 done
 tlc Commit Commit -coverage 1
 zero=$(grep ' of module Commit: 0$' "$tmp/Commit.out" || true)
