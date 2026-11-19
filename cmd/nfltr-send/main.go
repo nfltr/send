@@ -292,7 +292,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	cf := addCommon(fs)
 	addrFile := fs.String("address-file", "-", "read the address from this `file` (mode 0600), or - for stdin")
 	to := fs.String("to", ".", "receive into this `directory`")
-	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last")
+	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last, or after a commit whose session was cut tells the sender again")
 	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths (each path used, in order); on failure instead exit, code (usage, refused, failed, direct_required) and error")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {

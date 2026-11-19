@@ -171,7 +171,20 @@ v2.1.73, same machine, 2026-11-19): every relayed cell of the matrix
 dropped for 2 to 15 s): every receive right, no committed receive exiting
 non-zero, no sender left serving after a transfer without a fault or with
 a killed process; 4 of the 20 link drops left the sender serving (defect
-3 above, fixed since).
+3 above).
+
+Rerun with defect 3 fixed (nfltr-send at land/SENDONCE aa78326, nfltr and
+nfltr-relay v2.1.73, same machine, 2026-11-19): two 25-minute soaks of
+relayed cells (`REL_SEED=17` and `29`), 217 transfers, 120 with a fault,
+33 of them a link drop: all 217 right, none left a sender serving. The
+whole matrix (`make reliability`, 55 cells, 275 transfers): 260 right,
+0 corrupted; the 15 failures are all `cut-receiver-*-direct`
+(`sender_hang`), and the same cells fail at main (d3a2174) too, 9 of 9:
+after a transfer completed, a `--once` sender whose earlier direct-path
+receiver was killed takes more than 10 s to exit, its listener's close
+waiting for that dead receiver's direct session (relay client
+`nfnet.Listener.Close`, `agent.directServer.stop`). Open, not in this
+fix.
 
 ## Rerun
 
