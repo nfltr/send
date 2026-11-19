@@ -33,10 +33,15 @@ its transfers.
 A run passes when the receiver exits as expected (0, or 12 for
 `anon-no-udp`), the received tree equals the sent one (or is empty when
 nothing may be committed), no stage is left after a commit, and a
-`--once` sender exits 0 within 30 s of a completed transfer. A run whose
-committed tree differs from the sent one in any byte is counted as
-`corrupt`; any corrupt run fails the whole run. Each cell runs `REL_N`
-times (default 5).
+`--once` sender exits 0 within 30 s of a completed transfer. Failure
+reasons: `exit_<n>`, `timeout`, `sender_hang` (a `--once` sender still
+serving 30 s after the receiver committed), `sender_exit_<n>`,
+`committed_on_failure` (a receive that exited non-zero left the offer's
+files, right ones, in place; `first_` when it was the receive cut by the
+sender's death), `missing`, `stage_left`, and `corrupt`: a visible file
+that differs from the one sent in any byte, or a name never sent. A run
+whose receiver exited 0 with a file missing or any corrupt run counts as
+`corrupted`, which must be 0. Each cell runs `REL_N` times (default 5).
 
 The soak (`make reliability-soak`, `REL_SOAK_S`, default 24 h) runs random
 cells (all but the large file; `REL_SEED`), half of the `net-` ones with a
@@ -59,7 +64,8 @@ In `REL_OUT` (default `$TMPDIR/nfltr-send-rel-<mode>-<time>`):
   `net.core.rmem_max`) and the binaries' versions; `*-summary.md`, the
   per-cell table.
 - `logs/<cell>/<run>/`: the sender's and receiver's output of every failed
-  run (a passing run's logs are removed); `relay.log`.
+  run, and `received.json`, what it left in the receiving directory (each
+  path's SHA-256); a passing run's logs are removed. `relay.log`.
 
 ## Running it
 

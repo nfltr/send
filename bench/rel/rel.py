@@ -158,21 +158,30 @@ def expected(src):
 
 
 def judge(to, src, committed):
-    """None when the visible tree is right: the whole offer when committed,
-    else nothing (a refused or failed receive commits nothing; its hidden
-    stage is allowed). Else the reason and the differing paths."""
+    """(None, []) when the visible tree is right: the whole offer when
+    committed, else nothing (a refused or failed receive commits nothing;
+    its hidden stage is allowed). Else the reason and the differing paths:
+    corrupt (a visible file differs from the one offered, or was never
+    offered), missing, stage_left (a stage after a commit), or
+    committed_on_failure (right files visible after a failed receive)."""
     got = {k: v for k, v in tree(to).items() if not k.split("/")[0].startswith(STAGE)}
-    want = expected(src) if committed else {}
-    if committed and any(k.split("/")[0].startswith(STAGE) for k in os.listdir(to)):
-        return "stage_left", sorted(x for x in os.listdir(to) if x.startswith(STAGE))
-    bad = sorted(k for k in got if k in want and got[k] != want[k])
+    want = expected(src)
+    bad = sorted(k for k in got if got[k] != want.get(k))
     if bad:
         return "corrupt", bad[:10]
+    if not committed:
+        return ("committed_on_failure", sorted(got)[:10]) if got else (None, [])
     if set(want) - set(got):
         return "missing", sorted(set(want) - set(got))[:10]
-    if set(got) - set(want):
-        return "extra", sorted(set(got) - set(want))[:10]
-    return None, []
+    left = sorted(x for x in os.listdir(to) if x.startswith(STAGE))
+    return ("stage_left", left) if left else (None, [])
+
+
+def keep_tree(to, logdir):
+    """What a failed run left in the receiving directory: every path with
+    its SHA-256 (or d), stages included."""
+    with open(f"{logdir}/received.json", "w") as f:
+        json.dump(tree(to), f, indent=0)
 
 
 def staged(to):
@@ -246,7 +255,7 @@ def wait(p, t):
 def kill(p):
     if p.poll() is None:
         os.killpg(p.pid, signal.SIGKILL)
-    p.wait()
+    return p.wait()
 
 
 def run_cell(c, logdir):
@@ -284,9 +293,9 @@ def run_cell(c, logdir):
                     time.sleep(f["s"])
                     impair(c.get("rate", 0), c.get("rtt", 0), c.get("loss", 0))
                 elif f["victim"] == "receiver":
-                    kill(rp)
-                    rp = r.receiver(to)
-                    procs.append(rp)
+                    if kill(rp) != 0:  # 0: it finished before the cut
+                        rp = r.receiver(to)
+                        procs.append(rp)
                 else:
                     kill(s)
                     t1 = time.time()
@@ -294,17 +303,27 @@ def run_cell(c, logdir):
                     row["first_exit_s"] = round(time.time() - t1, 1)
                     if row["first_exit"] is None:
                         return dict(row, ok=False, reason="receiver_hang_after_sender_kill")
-                    s, why = r.sender(src)
-                    procs.append(s)
-                    if why:
-                        return dict(row, ok=False, reason=why)
-                    rp = r.receiver(to)
-                    procs.append(rp)
+                    if row["first_exit"] != 0:
+                        bad, diff = judge(to, src, False)
+                        if bad:
+                            keep_tree(to, logdir)
+                            return dict(row, ok=False, reason="first_" + bad, diff=diff, corrupt=bad == "corrupt")
+                    if row["first_exit"] == 0:  # it had every byte before the cut
+                        s = None
+                    else:
+                        s, why = r.sender(src)
+                        procs.append(s)
+                        if why:
+                            return dict(row, ok=False, reason=why)
+                        rp = r.receiver(to)
+                        procs.append(rp)
         if f.get("kind") == "diskfull":
             row["first_exit"] = wait(rp, TIMEOUT)
-            bad, paths = judge(to, src, False)
+            bad, diff = judge(to, src, False)
             if row["first_exit"] in (0, None) or bad:
-                return dict(row, ok=False, reason="diskfull_" + (bad or f"exit_{row['first_exit']}"), paths=paths)
+                keep_tree(to, logdir)
+                return dict(row, ok=False, reason="diskfull_" + (bad or f"exit_{row['first_exit']}"), diff=diff,
+                            corrupt=bad == "corrupt")
             sh(f"mount -o remount,size={size * 3} {to}")
             rp = r.receiver(to)
             procs.append(rp)
@@ -314,16 +333,17 @@ def run_cell(c, logdir):
         row.update(rc=rc, seconds=round(secs, 3), paths=js.get("paths"), sessions=js.get("sessions"),
                    written=js.get("written"), first_byte_s=js.get("first_byte_s"), code=js.get("code"))
         want = c.get("expect", 0)
-        bad, paths = judge(to, src, want == 0 and rc == 0)
-        if bad:  # a byte wrong, missing or extra in what the receiver committed
-            return dict(row, ok=False, reason=bad, paths=paths, corrupt=True)
+        bad, diff = judge(to, src, want == 0 and rc == 0)
+        if bad:  # corrupt or missing: a byte wrong, missing or extra in what the receiver committed
+            keep_tree(to, logdir)
+            return dict(row, ok=False, reason=bad, diff=diff, corrupt=bad == "corrupt" or bad == "missing")
         if rc is None:
             return dict(row, ok=False, reason="timeout")
         if rc != want:
             return dict(row, ok=False, reason=f"exit_{rc}")
         if want == 0:
             row["mbit"] = round(size * 8 / secs / 1e6, 1)
-            sr = wait(s, 30)
+            sr = 0 if s is None else wait(s, 30)
             if sr != 0:
                 return dict(row, ok=False, reason="sender_hang" if sr is None else f"sender_exit_{sr}")
         return dict(row, ok=True, reason=None)
