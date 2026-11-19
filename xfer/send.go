@@ -118,7 +118,7 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 	switch {
 	case err != nil:
 		return a, 0, noEOF(err)
-	case t == frameAnswer: // refused before anything was sent
+	case t == frameAnswer: // refused before anything was sent, or a committed receive telling again (Retell)
 		return a, 0, json.Unmarshal(p, &a)
 	case t != frameWant:
 		return a, 0, fmt.Errorf("%w: frame %q, want the receiver's want", ErrProtocol, t)

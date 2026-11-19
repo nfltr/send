@@ -116,6 +116,27 @@ func answer(c *conn, a Answer) (Answer, error) {
 	return a, err
 }
 
+// Retell answers a session of an offer this process already committed
+// with that commit's answer a, in place of the want (spec End.tla Retell):
+// the receive whose session was cut before its answer reached the sender
+// dials the address again so that a --once sender learns the transfer is
+// done. The manifest must be the committed offer's (its file count and
+// bytes); else nothing is answered.
+func Retell(rw io.ReadWriter, a Answer) error {
+	c := newConn(rw)
+	var m Manifest
+	if err := c.readJSON(frameManifest, &m); err != nil {
+		return err
+	}
+	if !a.OK || countFiles(m) != a.Files || countBytes(m) != a.Bytes {
+		return fmt.Errorf("%w: not the committed offer", ErrProtocol)
+	}
+	if err := c.writeJSON(frameAnswer, a); err != nil {
+		return err
+	}
+	return c.flush()
+}
+
 type receiver struct {
 	m         Manifest
 	raw       []byte   // the manifest as the sender sent it

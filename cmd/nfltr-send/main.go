@@ -368,9 +368,32 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 		}
 		written = base + n
 	}
+	// told is the answer of a commit whose session was cut before the
+	// sender confirmed it: the next sessions tell it again (spec End.tla
+	// Retell; a --once sender serves until it reads an answer). A commit
+	// stands whether or not they do (ExitRight).
+	var told *xfer.Answer
 	for try := 1; ; try++ {
 		base = written
-		a, err := receiveOnce(ctx, d, t, mode, dir, progress, onPath)
+		var a xfer.Answer
+		var err error
+		if told == nil {
+			a, err = receiveOnce(ctx, d, t, mode, dir, progress, onPath)
+			if errors.As(err, new(unconfirmed)) {
+				told = &a
+			}
+		} else {
+			a, err = *told, retellOnce(ctx, d, t, mode, *told)
+		}
+		if told != nil && err != nil {
+			if try < tries && ctx.Err() == nil {
+				fmt.Fprintf(w, "session %d ended after the commit (%v); telling the sender again\n", try, err)
+				wait(ctx, try)
+				continue
+			}
+			fmt.Fprintf(w, "the sender did not confirm the end (%v); a --once sender may serve on\n", err)
+			err = nil
+		}
 		switch {
 		case err == nil && a.OK:
 			el := time.Since(t0).Seconds()
@@ -395,12 +418,23 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 			return fail(3, fmt.Errorf("%w; receive the same address again to resume", err))
 		}
 		fmt.Fprintf(w, "session %d ended (%v); resuming\n", try, err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(time.Duration(min(try, 5)) * time.Second):
-		}
+		wait(ctx, try)
 	}
 }
+
+// wait is the pause before session try+1.
+func wait(ctx context.Context, try int) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Duration(min(try, 5)) * time.Second):
+	}
+}
+
+// unconfirmed is a committed receive whose session's close did not
+// return clean: the sender may not have read the answer.
+type unconfirmed struct{ error }
+
+func (e unconfirmed) Unwrap() error { return e.error }
 
 // openError is a session that did not open.
 type openError struct{ error }
@@ -425,11 +459,37 @@ func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfne
 		return xfer.Answer{}, openError{err}
 	}
 	onPath(c.Info().Path, "")
-	defer c.Close() //nolint:errcheck
 	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
 	defer stop()
-	return xfer.Receive(c, dir, progress)
+	a, err := receive(c, dir, progress)
+	// The close returns clean once the sender read every byte, the answer
+	// with them; else a committed receive tells it again (receiveTo).
+	if cerr := c.Close(); err == nil && a.OK && cerr != nil {
+		err = unconfirmed{cerr}
+	}
+	return a, err
 }
+
+// retellOnce dials t again and answers its manifest with a, the answer
+// of the commit whose session was cut (xfer.Retell).
+func retellOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, a xfer.Answer) error {
+	open, cancel := context.WithTimeout(ctx, openBound(mode))
+	c, err := d.DialTarget(open, t, nfnet.DialOptions{Direct: mode})
+	cancel()
+	if err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
+	defer stop()
+	err = xfer.Retell(c, a)
+	if cerr := c.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// receive is xfer.Receive (a test cuts the session under its answer).
+var receive = xfer.Receive
 
 func readAddress(name string) (string, error) {
 	var b []byte
