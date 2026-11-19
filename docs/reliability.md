@@ -97,8 +97,8 @@ ideal is the part still missing: 0.75 after a cut at 25 %).
 
 ## Defects found and fixed
 
-Both were in how a relayed transfer ends (lane SENDFIX; model
-[`spec/End.tla`](../spec/README.md), a mutant for each).
+All three were in how a relayed transfer ends (lanes SENDFIX and SENDONCE;
+model [`spec/End.tla`](../spec/README.md), a mutant for each).
 
 1. **A `--once` sender kept serving after a relayed transfer completed**
    (74 of 130 relayed transfers in the matrix, never on the direct path).
@@ -121,6 +121,40 @@ Both were in how a relayed transfer ends (lane SENDFIX; model
    answer reached the sender: exit 0. Test
    `TestCommitStandsWhenTheAnswerDoesNotGo`; model `ExitRight`, mutant
    `exit-on-answer`.
+3. **A `--once` sender served on after a link drop at the commit** (4 of
+   20 relayed link drops in the soak below, lane SENDONCE). A drop longer
+   than the session's liveness, right after the receiver committed, made
+   the relay reset the session before the receiver's answer reached the
+   sender; the receiver exited 0 with every file, and the sender, never
+   told, served on. Fix: the receiver takes its session's close as the
+   sender's confirmation (it returns clean once the sender read every
+   byte, the answer with them). A committed receive whose close did not
+   return clean dials the address again, within its `--tries` (the
+   pauses of a resume: 1, 2, ... 5 s), and answers the manifest at once
+   with the commit's answer (`xfer.Retell`; the sender already takes an
+   answer in place of the want), so the sender reads it and ends. The
+   receive exits 0 either way (its files are in place); after the last
+   try it says the sender did not confirm. Test
+   `TestOnceSenderToldAfterACutAnswer` (the receiver's relay connections
+   cut under its answer; before the fix the sender logged `session reset
+   by the peer` and served on); model `Retold`, mutant `no-retell`.
+
+   Rejected: a `--once` sender that, after a reset following its last
+   byte, waits a while for a new session and then exits with a
+   "delivered, unconfirmed" code. The sender cannot tell a receiver that
+   committed from one that died before its commit with every byte
+   staged; exiting would strand the second (its next receive resumes from
+   a sender that is gone), and the exit would claim a delivery nobody
+   confirmed. The model's mutant `sender-gives-up` is that design, caught
+   by `Confirmed` (a sender ends only on an answer). The sender still
+   exits 0 only on the receiver's answer. Prior art: the receiver's
+   repeated answer is TCP's final acknowledgement repeated from
+   TIME-WAIT when the peer's FIN comes again (RFC 9293, TIME-WAIT),
+   and an idempotent retry of the last message of an exchange; no end of
+   a two-party exchange over a lossy link can be certain (the two
+   generals), so the receiver's tries bound it: a drop that outlasts them
+   all leaves the sender serving, as one that outlasts a receiver killed
+   after its commit does.
 
 Rerun with the fixes (nfltr-send at land/SENDFIX, nfltr and nfltr-relay
 v2.1.73, same machine, 2026-11-19): every relayed cell of the matrix
@@ -129,11 +163,8 @@ v2.1.73, same machine, 2026-11-19): every relayed cell of the matrix
 (`REL_SEED=17`, 137 transfers, 65 with a process killed, 20 with the link
 dropped for 2 to 15 s): every receive right, no committed receive exiting
 non-zero, no sender left serving after a transfer without a fault or with
-a killed process; 4 of the 20 link drops left the sender serving. In
-those the drop outlasted the sender's connection liveness, so the relay
-reset its session before the receiver's answer could arrive: the sender
-cannot know the transfer completed (spec/End.tla's `Cut`), and it serves
-on as for any session cut before its answer.
+a killed process; 4 of the 20 link drops left the sender serving (defect
+3 above, fixed since).
 
 ## Rerun
 

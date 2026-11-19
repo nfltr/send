@@ -133,7 +133,9 @@ on|off`, `--machine-credential <file>`, `--relay <address>` (default
 `grpc.nfltr.xyz:443`, or `$NFLTR_SEND_RELAY`), `--relay-http`,
 `--relay-pin <sha256>` (a private relay's certificate).
 `receive`: `--to <dir>`, `--address-file <file>` (default stdin),
-`--tries <n>` (default 10, each session resuming the last), `--json` (one
+`--tries <n>` (default 10, each session resuming the last; after a
+commit whose session was cut before the sender read the answer, the
+remaining sessions tell the sender again, so a `--once` sender ends), `--json` (one
 JSON line on stderr: the totals and `paths`, each path the transfer used;
 on failure instead `exit`, `code` (`usage`, `refused`, `failed`,
 `direct_required`) and `error`, the exit status unchanged). `nfltr-send <command> -h` lists them all.
