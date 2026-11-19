@@ -197,8 +197,8 @@ on it follows. Resume re-sends only what is missing plus the bad chunk.
 round trip, loss, direct and relayed, cut and resume, many files, a 4 GiB
 file, no account, a full disk) and a soak, each transfer judged by exit
 codes and every received byte. On 2026-11-19 (v0.1.3) every one of 275
-receives was right and none corrupted; two open defects in how a relayed
-transfer ends are listed there.
+receives was right and none corrupted; the two defects it found in how a
+relayed transfer ends are fixed and listed there.
 
 ## Operating notes
 

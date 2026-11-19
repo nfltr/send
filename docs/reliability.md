@@ -25,7 +25,7 @@ transfers, 103 minutes.
   the `--once` sender kept serving after the receiver had committed every
   file. It logged `session reset by the peer` where it should have read
   the receiver's answer, so it never counted the transfer as done (see
-  "Open defects"). All 145 direct-path, no-account and disk-full transfers
+  "Defects found and fixed"). All 145 direct-path, no-account and disk-full transfers
   passed.
 - **Soak, 30 minutes** (random cells, 37 of 60 transfers with a fault: the
   sender or the receiver killed at a random point, or the link dropped for
@@ -95,24 +95,45 @@ ideal is the part still missing: 0.75 after a cut at 25 %).
   address after the file system grew must complete: 5/5 (median 35.7 s
   for both).
 
-## Open defects
+## Defects found and fixed
 
-1. **A `--once` sender keeps serving after a relayed transfer completed.**
-   The receiver has committed every file and exited 0; the sender logs
-   `transfer ended ... err="session reset: link: session reset by the
-   peer"` instead of `transfer done`, so `--once` never exits. 74 of 130
-   relayed transfers in the matrix, never on the direct path. The
-   receiver exits right after writing its answer, and the session's reset
-   appears to reach the sender before the answer does.
-2. **A relayed receive can commit every file and still exit 3.** When the
-   sender dies mid-transfer on the relayed path, the receiver can still
-   get every byte (what the sender had already written), verify and
-   commit it, then lose the session before the final answer, retry the
-   dead address and exit 3 with "receive the same address again to
-   resume". A receive of a new sender's address then refuses with exit 2
-   (the name exists). The committed files were right in all 4 soak cases;
-   a script that trusts the exit status sees a failure for a transfer
-   that succeeded.
+Both were in how a relayed transfer ends (lane SENDFIX; model
+[`spec/End.tla`](../spec/README.md), a mutant for each).
+
+1. **A `--once` sender kept serving after a relayed transfer completed**
+   (74 of 130 relayed transfers in the matrix, never on the direct path).
+   The sender logged `transfer ended ... err="session reset: link:
+   session reset by the peer"` instead of `transfer done`. Cause: the
+   receiver's close of its nf1 session cut the session's data connection
+   to the relay at once (relay client `nfnet`), its last frames and the
+   session's end still unwritten, so the relay reset the session under
+   the answer. Fixed in the relay client: the data connection drains
+   (link `Mux.Drain`) and closes with every frame written. Tests:
+   relay client v0.23.6 `TestNF1CloseKeepsWhatWasWritten`, here
+   `TestOnceRelayedSenderReadsTheAnswer` (20 relayed `--once` transfers
+   through relay-core; the first failed before the fix). Model: `Told`,
+   mutant `close-cuts`.
+2. **A relayed receive could commit every file and still exit 3** (4 soak
+   runs). When the sender died after its last frame, the receiver
+   committed, then its answer's write failed and the receive retried the
+   dead address and exited 3; a receive of a new address then refused
+   (the names taken). A committed receive is now done whether or not its
+   answer reached the sender: exit 0. Test
+   `TestCommitStandsWhenTheAnswerDoesNotGo`; model `ExitRight`, mutant
+   `exit-on-answer`.
+
+Rerun with the fixes (nfltr-send at land/SENDFIX, nfltr and nfltr-relay
+v2.1.73, same machine, 2026-11-19): every relayed cell of the matrix
+(`REL_CELLS='relayed$'`) 20 times, 26 cells, 520 transfers: 520 right,
+0 failed, no sender left serving. A 25-minute soak of relayed cells
+(`REL_SEED=17`, 137 transfers, 65 with a process killed, 20 with the link
+dropped for 2 to 15 s): every receive right, no committed receive exiting
+non-zero, no sender left serving after a transfer without a fault or with
+a killed process; 4 of the 20 link drops left the sender serving. In
+those the drop outlasted the sender's connection liveness, so the relay
+reset its session before the receiver's answer could arrive: the sender
+cannot know the transfer completed (spec/End.tla's `Cut`), and it serves
+on as for any session cut before its answer.
 
 ## Rerun
 
