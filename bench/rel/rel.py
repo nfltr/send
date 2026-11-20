@@ -15,7 +15,9 @@ Env: REL_BIN (nfltr-send, nfltr, nfltr-relay; default /bin-in), REL_OUT
 cells to run), REL_TIMEOUT (s per receive, default 600), REL_LARGE (the large
 file, head -c syntax, default 4G), REL_SMALL (the small files' count, default
 10000), REL_SOAK_S (soak seconds, default 86400), REL_SEED (soak, default the
-start time), REL_UID (owner of REL_OUT's files at the end)."""
+start time), REL_UID (owner of REL_OUT's files at the end), REL_SEND_S and REL_SEND_R (the
+sender's and the receiver's nfltr-send in REL_BIN, default nfltr-send: two
+versions, cross.sh)."""
 import json, os, random, re, signal, statistics, subprocess as sp, sys, time, hashlib
 
 B = os.environ.get("REL_BIN", "/bin-in")
@@ -27,6 +29,7 @@ W = "/w"
 RELAY = "10.77.0.1"
 MiB = 1 << 20
 STAGE = ".nfltr-send-"
+SEND = {"s": os.environ.get("REL_SEND_S", "nfltr-send"), "r": os.environ.get("REL_SEND_R", "nfltr-send")}
 
 
 def sh(cmd, check=True):
@@ -211,7 +214,7 @@ class Run:
         a = open(self.addr, "w")
         os.chmod(self.addr, 0o600)
         log = open(f"{self.logdir}/send{self.n}.log", "wb")
-        p = sp.Popen(["ip", "netns", "exec", "s", f"{B}/nfltr-send", "send", "--once", "--relay", f"{RELAY}:8443",
+        p = sp.Popen(["ip", "netns", "exec", "s", f"{B}/{SEND['s']}", "send", "--once", "--relay", f"{RELAY}:8443",
                       "--relay-http", f"{RELAY}:8444", "--relay-pin", PIN, src],
                      stdout=a, stderr=log, env=ENV["anon" if self.c.get("anon") else "s"], start_new_session=True)
         for _ in range(600):
@@ -226,7 +229,7 @@ class Run:
     def receiver(self, to):
         self.n += 1
         self.rlog = f"{self.logdir}/recv{self.n}.log"
-        args = ["ip", "netns", "exec", "r", f"{B}/nfltr-send", "receive", "--json", "--relay-pin", PIN, "--to", to]
+        args = ["ip", "netns", "exec", "r", f"{B}/{SEND['r']}", "receive", "--json", "--relay-pin", PIN, "--to", to]
         if self.c["path"] == "relayed":
             args += ["--direct", "off"]
         return sp.Popen(args, stdin=open(self.addr), stdout=sp.DEVNULL, stderr=open(self.rlog, "wb"), start_new_session=True)
@@ -427,7 +430,7 @@ def aggregate(rows):
 def machine():
     return {"kernel": sh("uname -r"), "cpus": os.cpu_count(), "load": open("/proc/loadavg").read().split()[:3],
             "rmem_max": open("/proc/sys/net/core/rmem_max").read().strip(),
-            "nfltr-send_sha256": sh(f"sha256sum {B}/nfltr-send | cut -d' ' -f1"),
+            **{f"nfltr-send_{n}_sha256": sh(f"sha256sum {B}/{b} | cut -d' ' -f1") for n, b in SEND.items()},
             "nfltr": sh(f"{B}/nfltr version | head -1"), "nfltr-relay": sh(f"{B}/nfltr-relay version 2>&1 | head -1")}
 
 

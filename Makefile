@@ -7,9 +7,9 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed
+.PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
 # make ci: the check workflow's Linux jobs, for a CI runner of our own.
-ci: check spec spec-traces release-dryrun
+ci: check spec spec-traces release-dryrun cross-version
 
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -59,3 +59,13 @@ reliability-soak:
 # runner can run it by name: make ci-request ... TARGET=reliability-soak-relayed.
 reliability-soak-relayed:
 	REL_SEED=$${REL_SEED:-17} REL_SOAK_S=1500 REL_CELLS='relayed$$' sh bench/rel/run.sh soak
+
+# make cross-version: the previous release SEND_PREV (downloaded from its
+# GitHub release, signature and sums verified) against nfltr-send built
+# from this checkout, both ways, relayed and direct, on a private relay
+# (bench/rel/cross.sh; docs/v1-contract.md "Compatibility"); Linux with
+# docker. A release moves SEND_PREV to itself.
+SEND_PREV ?= v0.1.7
+export SEND_PREV
+cross-version:
+	sh bench/rel/cross.sh
