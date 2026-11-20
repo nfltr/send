@@ -69,36 +69,68 @@ func New(r io.ReaderAt, size int64) (Tree, error) {
 }
 
 // groupCVs is the chaining value of each GroupSize chunk of r's size
-// bytes, GOMAXPROCS chunks at a time.
+// bytes (eachChunk).
 func groupCVs(r io.ReaderAt, size int64) ([][8]uint32, error) {
 	chunks := (size + GroupSize - 1) / GroupSize
 	cvs := make([][8]uint32, chunks)
+	var short atomic.Bool
+	err := eachChunk(r, size, func() int64 {
+		if short.Load() {
+			return 0
+		}
+		return chunks
+	}, func(i int64, p []byte) {
+		off := i * GroupSize
+		if int64(len(p)) != min(GroupSize, size-off) {
+			short.Store(true)
+			return
+		}
+		cvs[i] = groupCV(p, uint64(off)/guts.ChunkSize) // #nosec G115 -- off >= 0
+	})
+	if err == nil && short.Load() {
+		err = io.ErrUnexpectedEOF
+	}
+	return cvs, err
+}
+
+// maxSpan is how many GroupSize chunks eachChunk reads at once: from a
+// cold page cache, 4 MiB reads per goroutine read the disk 1.6 times as
+// fast as 256 KiB ones (docs/performance.md; kept by TestSpans).
+const maxSpan = 16
+
+// eachChunk calls f with each GroupSize chunk i of r's first size bytes,
+// while i is below limit(), GOMAXPROCS goroutines at a time, each reading
+// up to maxSpan chunks at once (fewer when that leaves a goroutine
+// without any); p is what was read of chunk i, short when the read was.
+// It returns a read error other than io.EOF.
+func eachChunk(r io.ReaderAt, size int64, limit func() int64, f func(i int64, p []byte)) error {
+	chunks := (size + GroupSize - 1) / GroupSize
+	procs := int64(runtime.GOMAXPROCS(0))
+	span := max(1, min(maxSpan, chunks/procs))
 	var next atomic.Int64
 	var mu sync.Mutex
 	var err error
 	var wg sync.WaitGroup
-	for range min(int64(runtime.GOMAXPROCS(0)), chunks) {
+	for range min(procs, (chunks+span-1)/span) {
 		wg.Go(func() {
-			buf := make([]byte, GroupSize)
-			for i := next.Add(1) - 1; i < chunks; i = next.Add(1) - 1 {
-				off := i * GroupSize
-				p := buf[:min(GroupSize, size-off)]
-				if _, rerr := r.ReadAt(p, off); rerr != nil {
-					if errors.Is(rerr, io.EOF) {
-						rerr = io.ErrUnexpectedEOF
-					}
+			buf := make([]byte, span*GroupSize)
+			for s := next.Add(span) - span; s < min(chunks, limit()); s = next.Add(span) - span {
+				off := s * GroupSize
+				k, rerr := r.ReadAt(buf[:min(int64(len(buf)), size-off)], off)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
 					mu.Lock()
 					err = rerr
 					mu.Unlock()
-					next.Store(chunks)
-					return
 				}
-				cvs[i] = groupCV(p, uint64(off)/guts.ChunkSize) // #nosec G115 -- off >= 0
+				for i := s; i < min(s+span, chunks, limit()); i++ {
+					lo, hi := (i-s)*GroupSize, min((i-s+1)*GroupSize, size-off)
+					f(i, buf[min(lo, int64(k)):min(hi, int64(k))])
+				}
 			}
 		})
 	}
 	wg.Wait()
-	return cvs, err
+	return err
 }
 
 // groupCV is the chaining value of the BLAKE3 subtree of p, whose first
@@ -184,33 +216,15 @@ func (t Tree) Verify(r io.ReaderAt) (n int64, whole bool, err error) {
 		return 0, false, nil
 	}
 	chunks := (t.Size + GroupSize - 1) / GroupSize
-	var next, bad atomic.Int64 // the next chunk to check; the first that did not verify
+	var bad atomic.Int64 // the first chunk that did not verify
 	bad.Store(chunks)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for range min(int64(runtime.GOMAXPROCS(0)), chunks) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			buf := make([]byte, GroupSize)
-			for i := next.Add(1) - 1; i < min(chunks, bad.Load()); i = next.Add(1) - 1 {
-				off := i * GroupSize
-				p := buf[:min(GroupSize, t.Size-off)]
-				k, rerr := r.ReadAt(p, off)
-				if k == len(p) && t.Chunk(p, off) {
-					continue
-				}
-				if rerr != nil && !errors.Is(rerr, io.EOF) {
-					mu.Lock()
-					err = rerr
-					mu.Unlock()
-				}
-				for b := bad.Load(); i < b && !bad.CompareAndSwap(b, i); b = bad.Load() {
-				}
-			}
-		}()
-	}
-	wg.Wait()
+	err = eachChunk(r, t.Size, bad.Load, func(i int64, p []byte) {
+		if t.Chunk(p, i*GroupSize) {
+			return
+		}
+		for b := bad.Load(); i < b && !bad.CompareAndSwap(b, i); b = bad.Load() {
+		}
+	})
 	b := bad.Load()
 	return min(b*GroupSize, t.Size), b == chunks && (t.Size > 0 || t.Root == empty), err
 }
@@ -223,27 +237,9 @@ func (t Tree) Good(r io.ReaderAt) ([]bool, error) {
 	if !t.Valid() {
 		return good, nil
 	}
-	var next atomic.Int64
-	var mu sync.Mutex
-	var err error
-	var wg sync.WaitGroup
-	for range min(int64(runtime.GOMAXPROCS(0)), chunks) {
-		wg.Go(func() {
-			buf := make([]byte, GroupSize)
-			for i := next.Add(1) - 1; i < chunks; i = next.Add(1) - 1 {
-				off := i * GroupSize
-				p := buf[:min(GroupSize, t.Size-off)]
-				k, rerr := r.ReadAt(p, off)
-				good[i] = k == len(p) && t.Chunk(p, off)
-				if rerr != nil && !errors.Is(rerr, io.EOF) {
-					mu.Lock()
-					err = rerr
-					mu.Unlock()
-				}
-			}
-		})
-	}
-	wg.Wait()
+	err := eachChunk(r, t.Size, func() int64 { return chunks }, func(i int64, p []byte) {
+		good[i] = t.Chunk(p, i*GroupSize)
+	})
 	return good, err
 }
 

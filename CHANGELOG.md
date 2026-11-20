@@ -23,6 +23,10 @@ These change what scripts see; v1.0 keeps them.
   set-relay` and nfltr's `cat` commands use (one name in all three tools);
   `--relay-cert-sha256` is refused. `$NFLTR_RELAY_CERT_SHA256` is
   unchanged.
+- **Large files: the address and the commit come sooner.** The sender's
+  BLAKE3 tree and the receiver's check of the file on its disk read
+  4 MiB at a time instead of 256 KiB; from a cold page cache that read
+  the disk 1.6 times as fast (local, docs/performance.md).
 
 ## v0.1.9
 

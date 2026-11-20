@@ -6,6 +6,9 @@ package verified
 import (
 	"bytes"
 	"crypto/rand"
+	"io"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/nfltr/blake3"
@@ -106,6 +109,58 @@ func TestVerify(t *testing.T) {
 		if got, whole, err := c.tr.Verify(bytes.NewReader(c.data)); err != nil || got != c.want || whole != c.whole {
 			t.Errorf("%s: %d, %v, %v; want %d, %v", name, got, whole, err, c.want, c.whole)
 		}
+	}
+}
+
+// reads records the length of each ReadAt.
+type reads struct {
+	io.ReaderAt
+	mu sync.Mutex
+	n  []int
+}
+
+func (r *reads) ReadAt(p []byte, off int64) (int, error) {
+	r.mu.Lock()
+	r.n = append(r.n, len(p))
+	r.mu.Unlock()
+	return r.ReaderAt.ReadAt(p, off)
+}
+
+// New, Verify and Good read maxSpan chunks at once (the cold-cache read
+// rate, docs/performance.md) and keep their results across a span: a
+// corrupted chunk inside one, a cut one, the last short one.
+func TestSpans(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	b, tr := file(t, 40*GroupSize+7)
+	if tr.Root != blake3.Sum256(b) {
+		t.Fatal("root differs from BLAKE3")
+	}
+	r := &reads{ReaderAt: bytes.NewReader(b)}
+	if _, whole, err := tr.Verify(r); !whole || err != nil {
+		t.Fatalf("whole file: %v, %v", whole, err)
+	}
+	if r.n[0] != maxSpan*GroupSize {
+		t.Fatalf("read %d bytes at once, want %d", r.n[0], maxSpan*GroupSize)
+	}
+	bad := bytes.Clone(b)
+	bad[20*GroupSize+3] ^= 1
+	if n, whole, err := tr.Verify(bytes.NewReader(bad)); n != 20*GroupSize || whole || err != nil {
+		t.Fatalf("corrupted chunk 20: %d, %v, %v", n, whole, err)
+	}
+	if n, whole, err := tr.Verify(bytes.NewReader(b[:33*GroupSize+9])); n != 33*GroupSize || whole || err != nil {
+		t.Fatalf("cut in chunk 33: %d, %v, %v", n, whole, err)
+	}
+	good, err := tr.Good(bytes.NewReader(bad[:33*GroupSize+9]))
+	if err != nil || len(good) != 41 {
+		t.Fatal(len(good), err)
+	}
+	for i, g := range good {
+		if g != (i != 20 && i < 33) {
+			t.Errorf("chunk %d good %v", i, g)
+		}
+	}
+	if _, err := New(bytes.NewReader(b[:33*GroupSize+9]), int64(len(b))); err != io.ErrUnexpectedEOF {
+		t.Fatalf("New of a short file: %v", err)
 	}
 }
 

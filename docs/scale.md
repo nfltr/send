@@ -306,14 +306,30 @@ of 100 GiB; each run is `run.sh` with `TIMEOUT=14400`.
   with no network traffic, 1.7 vCPUs busy and 1.8 in I/O wait, and then
   exited with the file committed. Its disk read about the whole file once
   more per run (425.9 GB read over the two runs, 214.7 GB of it the two
-  BLAKE3 checks below). That time is in "address to received".
+  BLAKE3 checks below). That time is in "address to received". The read
+  is the receiver's check of the whole file on its disk against the
+  offered root before it commits (`internal/xfer/receive.go` `verify`;
+  `spec/Resume.tla` `Finish`). The per-chunk checks on arrival do not
+  replace it: they cannot see a chunk that changes on the disk after it
+  was written (`Rot`), and the model's `no-final-check` mutant, which
+  commits without it, breaks `Safe`. It read the disk at 1.2 GB/s in
+  256 KiB reads. After v0.1.9 it reads 4 MiB at a time; locally (not on
+  these machines) that took the last byte to commit of a 20 GiB file from
+  44.7 to 33.9 s (`docs/performance.md`).
 - **Disk**: the received file took 107.4 GB of G's 153 GB free; 46 GB
   were left after the commit.
 - **Integrity**: both runs exited 0 at both ends, and `b3sum` of the
   received file equals the sent one's
   (`e686123bfcba5a5a58ee02edd9faff9e4060d16c3164fa8547c823b18d25cfb7`).
 - **To address**: 49.9 s here against 30.1 s on A for the same 100 GiB
-  of the same kind of machine; not investigated.
+  of the same kind of machine. Nearly all of it is the sender reading the
+  file to build its BLAKE3 root and outboard: the relay logged the
+  sender's registration 51 s after run 1's start, and the address
+  follows it at once. That read ran at 2.1 GB/s with 1.4 vCPUs hashing,
+  1.8 in the kernel and 3.8 in I/O wait: F's disk (3.5 GB/s with
+  `iflag=direct`) against A's (13.7 GB/s), in 256 KiB reads. The reads
+  are 4 MiB after v0.1.9; locally (not on F) a 20 GiB file's sender
+  start to manifest went from 43.6 to 38.2 s (`docs/performance.md`).
 
 ## Limits
 
