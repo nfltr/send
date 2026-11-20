@@ -231,12 +231,22 @@ link drops left a sender serving; with it, 0 of 44 (this soak and the two
 of 2026-11-19).
 
 nfltr-pipe has the same end, without a protocol of its own to tell the
-other side again: relayed, an end can exit 0 while its peer, whose link
+other side again: relayed, an end could exit 0 while its peer, whose link
 dropped after the relay took the last bytes, exits 6 with a prefix
-(nfltr-pipe `docs/reliability.md` defect 4, open; its fix is a relayed
-Close that waits for the far end, in the relay client). nfltr-send does
-not rely on its Close for this: the receiver waits for the sender's own
+(nfltr-pipe `docs/reliability.md` defect 4). Fixed in link v0.12.19,
+relay client v0.23.9 and relay-core v0.16.8 (lane RELAYCLOSE): a relayed
+Close waits for the far end, as a direct one does. nfltr-send does not
+rely on its Close for this: the receiver waits for the sender's own
 clean end.
+
+## On the r27 modules, 2026-11-20
+
+nfltr-send at `8073c2e` (link v0.12.20, relay client v0.23.10,
+relay-core v0.16.9) with nfltr and nfltr-relay v2.1.73, on the CI
+machine of the baseline (`make reliability`, a box run): 55 cells, 5
+runs each, 275 transfers, 71 minutes. **275 of 275 passed, corrupted 0.**
+The same matrix on the r26 modules (link v0.12.19, relay client v0.23.9)
+also passed 275 of 275.
 
 ## Rerun
 
