@@ -83,6 +83,22 @@ release; released binaries are fetched and verified by `fetch.sh`
 (nfltr-send's signed `SHA256SUMS`, nfltr's installer). It exits 0 only when every
 transfer passed.
 
+## Cross-version
+
+`make cross-version` (`cross.sh`, in `make ci` and the check workflow)
+runs the previous release, `SEND_PREV` in the Makefile (downloaded from its
+GitHub release by `fetch.sh`, `SHA256SUMS.sshsig` verified against
+`release/allowed_signers` and the binary against `SHA256SUMS`), against
+nfltr-send built from the checkout, on this harness's private relay, twice:
+the old one sends and the new one receives (`REL_SEND_S`, `REL_SEND_R`), then the reverse. Cells (`CROSS_CELLS`): a file at 100 Mbit/s, small files (`REL_SMALL`, default 500), a receiver and a sender cut at 50 %, each relayed and direct, and `anon-direct`; `REL_N` runs each (default 1).
+Results in `REL_OUT/<first>-<second>/`. It exits 0 only when every run of
+both ways passed. A release moves `SEND_PREV` to itself.
+
+```console
+$ make cross-version
+$ make cross-version SEND_PREV=v0.1.0 REL_N=3
+```
+
 Limits: one machine, so the round trip and the loss are netem's, not a
 real path's, and every cell shares the machine's CPU with whatever else
 runs there (each run records the load average). The host's

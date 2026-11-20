@@ -128,6 +128,9 @@ ends"), and the sender a machine certificate issued for another relay.
 
 ## Flags and exit codes
 
+What every 1.x release keeps (commands, flags, environment, exit codes,
+the address, compatibility): [docs/v1-contract.md](docs/v1-contract.md).
+
 `send`: `--once` (exit after the first complete transfer), `--direct
 on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http`,
 `--relay-pin <sha256>` (a private relay's certificate).
