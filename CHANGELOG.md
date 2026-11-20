@@ -1,6 +1,17 @@
 # Changelog
 
-## v0.1.7 (unreleased)
+## Unreleased
+
+- **The contract of a 1.x release:** [docs/v1-contract.md](docs/v1-contract.md)
+  lists the commands, flags, environment variables, exit codes, the
+  `--json` keys, the address format, the protocol version and the
+  compatibility rule; a test fails when the code and it differ.
+- **`make cross-version`:** the previous release, downloaded from GitHub
+  and verified, against this checkout, both ways (a sender of one, a
+  receiver of the other), relayed and direct, on a private relay; in
+  `make ci` and the check workflow.
+
+## v0.1.7
 
 - **A stopped receive tells the sender at once.** A receive you stop
   (Ctrl-C) on the direct path now resets the session before it exits, so
