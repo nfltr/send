@@ -214,6 +214,13 @@ jobs, load average 7 to 63), 2026-11-19, the whole matrix in 71 minutes:
 so did the two direct cells v0.1.5 failed. One 4 GiB file: 2784 Mbit/s
 direct, 2770 relayed (medians); 10,000 files of 4 KiB: 158 Mbit/s each.
 
+nfltr-send at `a0af1ca` (the r25 modules: relay client v0.23.8, link
+v0.12.18, relay-core v0.16.7; nfltr and nfltr-relay v2.1.73), on the same
+machine (load average 0 to 22), 2026-11-20, the whole matrix in 70
+minutes: 275 of 275 right, 0 corrupted, no sender left serving. One 4 GiB
+file: 2370 Mbit/s direct, 2686 relayed (medians); 10,000 files of 4 KiB:
+166 Mbit/s direct, 151 relayed.
+
 ## Rerun
 
 ```console
