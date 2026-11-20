@@ -7,7 +7,7 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak
+.PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed
 # make ci: the check workflow's Linux jobs, for a CI runner of our own.
 ci: check spec spec-traces release-dryrun
 
@@ -55,3 +55,7 @@ reliability:
 	sh bench/rel/run.sh matrix
 reliability-soak:
 	sh bench/rel/run.sh soak
+# The relayed soak of docs/reliability.md (defect 3), 25 minutes, so a CI
+# runner can run it by name: make ci-request ... TARGET=reliability-soak-relayed.
+reliability-soak-relayed:
+	REL_SEED=$${REL_SEED:-17} REL_SOAK_S=1500 REL_CELLS='relayed$$' sh bench/rel/run.sh soak
