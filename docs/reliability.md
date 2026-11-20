@@ -248,6 +248,15 @@ runs each, 275 transfers, 71 minutes. **275 of 275 passed, corrupted 0.**
 The same matrix on the r26 modules (link v0.12.19, relay client v0.23.9)
 also passed 275 of 275.
 
+## On v0.1.9, 2026-11-20
+
+nfltr-send v0.1.9 (`7b6c86a`: link v0.13.0, relay client v0.23.12,
+relay-core v0.17.0) with nfltr and nfltr-relay v2.1.73, on the CI
+machine of the baseline (`make reliability`): 55 cells, 5 runs each, 275
+transfers, 70 minutes. **The run passed: 275 of 275, corrupted 0**, no
+sender left serving. Only the verdict was kept from this run, not the
+per-cell medians.
+
 ## Rerun
 
 ```console
