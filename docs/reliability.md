@@ -221,11 +221,29 @@ minutes: 275 of 275 right, 0 corrupted, no sender left serving. One 4 GiB
 file: 2370 Mbit/s direct, 2686 relayed (medians); 10,000 files of 4 KiB:
 166 Mbit/s direct, 151 relayed.
 
+Defect 3 on the r25 modules (nfltr-send at `7eeb246`, `a0af1ca` with
+`make reliability-soak-relayed`; nfltr and nfltr-relay v2.1.73; the same
+machine, load average 7 to 22), 2026-11-20: the relayed soak of seed 17,
+85 transfers, 56 with a fault, 11 of them a link drop (2 to 14 s, seven of
+10 s or more, three with the whole file staged when the link dropped): all
+85 right, none left a sender serving. Defect 3 before its fix: 4 of 20
+link drops left a sender serving; with it, 0 of 44 (this soak and the two
+of 2026-11-19).
+
+nfltr-pipe has the same end, without a protocol of its own to tell the
+other side again: relayed, an end can exit 0 while its peer, whose link
+dropped after the relay took the last bytes, exits 6 with a prefix
+(nfltr-pipe `docs/reliability.md` defect 4, open; its fix is a relayed
+Close that waits for the far end, in the relay client). nfltr-send does
+not rely on its Close for this: the receiver waits for the sender's own
+clean end.
+
 ## Rerun
 
 ```console
 $ make reliability                             # the matrix (nfltr-send from this checkout), about 80 minutes
 $ make reliability-soak REL_SOAK_S=1800        # 30 minutes of random cells with faults
+$ make reliability-soak-relayed                 # 25 minutes of relayed cells, REL_SEED 17 (defect 3's soak)
 $ make reliability SEND_VERSION=v0.1.5          # a released nfltr-send
 ```
 

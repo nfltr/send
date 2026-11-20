@@ -75,6 +75,7 @@ $ make reliability SEND_VERSION=v0.1.5 NFLTR_VERSION=v2.1.74   # released binari
 $ make reliability REL_BIN=/path/to/bins            # nfltr-send, nfltr, nfltr-relay
 $ make reliability REL_N=1 REL_CELLS='^cut-'        # a subset
 $ make reliability-soak REL_SOAK_S=1800
+$ make reliability-soak-relayed                     # 25 minutes, relayed cells, REL_SEED 17 unless set
 ```
 
 nfltr-send is built from the checkout unless `SEND_VERSION` names a
