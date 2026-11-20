@@ -11,7 +11,9 @@ the machines, and the sender holds a machine certificate from it, so the
 relay can carry a transfer. The scripts and how to rerun them are in
 [`bench/scale/`](../bench/scale/README.md). Each number is a median of the
 runs named. "address to received" is the receiver's own run, from its
-start to its exit with the files committed.
+start to its exit with the files committed. Test 5, on 2026-11-20, is
+the v0.1.9 release binary on the longest path between the provider's
+regions; it adds to the history above and replaces none of it.
 
 ## What limited a transfer
 
@@ -76,6 +78,8 @@ not yet known; they are to be rerun with each end's binary recorded.
 | C | sender and relay (test 3) | 2 dedicated | 8 GB | 80 GB | Nuremberg, DE |
 | D | receiver (test 3); the third-region relay | 2 dedicated | 8 GB | 80 GB | Ashburn, US |
 | E | receiver (test 3) | 2 dedicated | 8 GB | 80 GB | Singapore |
+| F | sender and relay (test 5) | 8 dedicated (AMD EPYC Milan) | 32 GB | 240 GB NVMe | Ashburn, US |
+| G | receiver (test 5) | 4 dedicated (AMD EPYC Milan) | 16 GB | 160 GB NVMe | Singapore |
 
 Debian 13, Linux 6.12, `net.core.rmem_max` and `wmem_max` 7,500,000 (the
 README's setting) unless a row says otherwise. IPv4 only: the machines'
@@ -93,6 +97,7 @@ pings, iperf3 for 10 s each):
 | C to D (Nuremberg to Ashburn) | 95.1 | 247 | 1013 | 1620 (0.4 %) |
 | C to E (Nuremberg to Singapore) | 158.7 | 69 | 376 | 1645 (4.5 %) |
 | C to A (Nuremberg to Falkenstein) | 2.8 | 6074 | 14057 | 1649 (0.8 %) |
+| F to G (Ashburn to Singapore, test 5) | 221.2 | 76 | 330 | 1146 (1.5 %) |
 
 ## 1 and 2. Large files and many small files (A to B, Falkenstein to Helsinki)
 
@@ -115,7 +120,9 @@ writes 1.1 GB/s (`dd conv=fdatasync`, 10 GiB and 100 GiB). A reads the
 - **100 GiB, address to received, before**: 4717 s (22.8 MB/s). This was one run,
   alongside some of the 10 GiB and mixed runs. Each session was bound by
   its own window, not by the path.
-- **100 GiB, after**: no uninterrupted run yet. The resume run's two
+- **100 GiB, after**: no uninterrupted run on this path. (On v0.1.9 an
+  uninterrupted 100 GiB ran on a longer path, Ashburn to Singapore: test
+  5.) The resume run's two
   receives moved 53.7 GB in 602 s (89 MB/s) and 53.7 GB in 704 s (76 MB/s);
   see test 4. Those are halves of a run whose receiver was killed and
   restarted, not a sustained rate for 100 GiB, and why the second half was
@@ -250,6 +257,64 @@ shell, not the receiver), so that run went through uninterrupted. It is
 reported above as the 100 GiB "before" time. The harness was fixed before
 the runs in this table.
 
+## 5. 100 GiB uninterrupted on the longest path (F to G, Ashburn to Singapore, v0.1.9)
+
+On 2026-11-20, with the v0.1.9 release binary at both ends (downloaded
+from the GitHub release on each machine, `SHA256SUMS` and its signature
+checked as the README says). The path is the one with the longest round
+trip between the provider's six regions, measured first with one small
+machine in each (20 pings each way, median; both directions within 1 ms,
+the table gives the row's side):
+
+| ms | Nuremberg | Helsinki | Ashburn | Hillsboro | Singapore |
+|---|---|---|---|---|---|
+| Falkenstein | 2.7 | 35.7 | 101 | 166 | 169 |
+| Nuremberg | | 23.7 | 91.9 | 163 | 167 |
+| Helsinki | | | 107 | 172 | 188 |
+| Ashburn | | | | 93.5 | **221** |
+| Hillsboro | | | | | 159 |
+
+F (8 dedicated vCPUs) sends; G (4 dedicated vCPUs, 153 GB free before the
+run, for the 107.4 GB file and its stage) receives. A private relay
+(`nfltr-relay` from nfltr v2.1.77) runs on F, as on C in test 3, and the
+sender holds a machine certificate from it. Debian 13, Linux 6.12,
+`rmem_max` and `wmem_max` 7,500,000, IPv4 only, page caches dropped
+before each run. F reads the file at 3.5 GB/s (`dd iflag=direct`); G
+writes 1.7 GB/s (`dd conv=fdatasync`, 10 GiB). The file is `gen.sh file`
+of 100 GiB; each run is `run.sh` with `TIMEOUT=14400`.
+
+| run | ok | to address s | address to received s | total s | Mbit/s | first byte s | send CPU s | send RSS MiB | recv CPU s | recv RSS MiB | paths | BLAKE3 received = sent |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | yes | 49.89 | 2395.7 | 2445.6 | 358.6 | 6.1 | 2260 | 153 | 2934 | 143 | relayed+direct | yes |
+| 2 | yes | 49.92 | 2187.5 | 2237.5 | 392.7 | 6.2 | 2178 | 151 | 2729 | 155 | relayed+direct | yes |
+| median of the 2 | 2/2 | 49.9 | 2291.6 | 2341.5 | 374.8 | 6.2 | 2219 | 152 | 2831 | 149 | relayed+direct | 2/2 |
+
+- **Path**: each transfer started relayed and went direct within its
+  first 10 s; the direct path (QUIC over UDP) carried the rest. Of the
+  receiver's packets during the run, 99.99 % were UDP (76.7 million
+  datagrams against 3,874 and 3,285 TCP segments). Both receivers printed
+  `path direct`. Neither moved back to the relay.
+- **Rate over the run**: in 10 s intervals while data arrived, run 1
+  received a median of 397 Mbit/s (10th to 90th percentile 309 to 472),
+  run 2 443 Mbit/s (373 to 479). One 16 MiB window per round trip at
+  221 ms allows about 607 Mbit/s. One TCP stream on this path carries
+  76 Mbit/s.
+- **CPU**: the sender used 0.9 of its 8 vCPUs on average (3.3 while it
+  built the address), the receiver 1.2 of its 4 (GNU time: CPU seconds over
+  wall seconds). Neither was short of CPU.
+- **After the last byte**: the receiver ran on for about 90 s in each run
+  with no network traffic, 1.7 vCPUs busy and 1.8 in I/O wait, and then
+  exited with the file committed. Its disk read about the whole file once
+  more per run (425.9 GB read over the two runs, 214.7 GB of it the two
+  BLAKE3 checks below). That time is in "address to received".
+- **Disk**: the received file took 107.4 GB of G's 153 GB free; 46 GB
+  were left after the commit.
+- **Integrity**: both runs exited 0 at both ends, and `b3sum` of the
+  received file equals the sent one's
+  (`e686123bfcba5a5a58ee02edd9faff9e4060d16c3164fa8547c823b18d25cfb7`).
+- **To address**: 49.9 s here against 30.1 s on A for the same 100 GiB
+  of the same kind of machine; not investigated.
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are
@@ -261,4 +326,5 @@ the runs in this table.
 - All runs are from one day's set of paths, on one provider's backbone
   between its regions, not the public internet's last miles.
 - The "after" binaries are a local build of v0.1.2 with the relay client
-  patched, not a release.
+  patched, not a release (tests 1 to 4). Test 5 is the v0.1.9 release:
+  2 runs on one pair of machines on one evening.
