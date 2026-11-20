@@ -62,6 +62,13 @@ func TestSessionsAreCappedAndEndWithTheirPeer(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("a session whose peer vanished still holds its slot")
 	}
+	// served is sent from inside serve; take frees the slot once serve
+	// returned, so wait for that state (it read busy on the CI runner).
+	for deadline := time.Now().Add(10 * time.Second); len(l.slots) > 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a session whose peer vanished still holds its slot")
+		}
+	}
 	x, y = net.Pipe()
 	l.take(x, serveOne)
 	if a, err := xfer.Receive(y, t.TempDir(), nil); err != nil || !a.OK {
