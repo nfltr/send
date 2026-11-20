@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+These change what scripts see; v1.0 keeps them.
+
+- **Exit codes are the relay SDK's, the same as nfltr-pipe's.** Exit 3
+  (`failed`) is split: 3 `not_found` (the sender is gone), 5
+  `unreachable` (the relay or the sender not reached), 6 `reset` (the
+  session cut), 7 `e2ee_pin_mismatch`, 10 `e2ee_client_refused`; a
+  refusal (a name exists, the sender busy, a commit refused) is 4
+  `refused`, no longer 2; 2 is now `auth` (the relay refused the sender's
+  certificate, or serves no address without an account) and 9
+  `balance_exhausted`. receive `--json`'s `code` names them so.
+- **A stopped sender exits 130 (SIGINT) or 143 (SIGTERM)**, no longer 0,
+  so a script tells it from a `--once` sender whose transfer completed
+  (0).
+- **`receive` takes no relay.** `--relay`, `--relay-http` and
+  `$NFLTR_SEND_RELAY` were ignored by receive (the address names its
+  relay); now each is a usage error (exit 1) that says so.
+- **`--relay-pin` is now `--relay-cert-sha256`**, the name of its
+  variable `$NFLTR_RELAY_CERT_SHA256` and of nfltr's `config set-relay
+  --cert-sha256`.
+- **`--direct` takes `on` or `off` only**; `true`, `false` and an empty
+  value are usage errors.
+- **`send -h` and `receive -h` exit 0**, as `help` does.
+- **`nfltr-send version`** (and `--version`) prints the release, its
+  commit and the Go version.
+- **Protocol versions are negotiated.** Every 1.x end speaks version 4;
+  a receiver takes any version from 4 to its own and both speak the
+  lower, so a later 1.x sender works with an earlier 1.x receiver.
+
 - **The contract of a 1.x release:** [docs/v1-contract.md](docs/v1-contract.md)
   lists the commands, flags, environment variables, exit codes, the
   `--json` keys, the address format, the protocol version and the

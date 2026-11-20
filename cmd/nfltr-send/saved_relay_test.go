@@ -33,7 +33,7 @@ func saveRelay(t *testing.T, server, proxy, pin string) {
 func relayConfig(t *testing.T, args ...string) (agentRelay, relay string, pinned bool) {
 	t.Helper()
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
-	c := addCommon(fs)
+	c := addCommon(fs, true)
 	if err := fs.Parse(args); err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +74,8 @@ func TestUnreachableRelayNamesItAndTheFlag(t *testing.T) {
 	defer cancel()
 	var code int
 	msg := stderrOf(t, func() { code = sendCmd(ctx, []string{offer(t)}) })
-	if code != 3 || !strings.Contains(msg, "127.0.0.1:1") || !strings.Contains(msg, "--relay") {
-		t.Fatalf("exit %d (%s), want 3 naming relay 127.0.0.1:1 and --relay", code, msg)
+	if code != 5 || !strings.Contains(msg, "127.0.0.1:1") || !strings.Contains(msg, "--relay") {
+		t.Fatalf("exit %d (%s), want 5 naming relay 127.0.0.1:1 and --relay", code, msg)
 	}
 }
 

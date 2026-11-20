@@ -23,7 +23,7 @@ set -uo pipefail
 tag=$1 rh=$2; shift 2
 : "${RELAY:?}" "${RELAY_HTTP:?}" "${RELAY_PIN:?}"
 RECV_DIR=${RECV_DIR:-/data/in} OUT=${OUT:-results.jsonl} TIMEOUT=${TIMEOUT:-3600}
-rargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-pin $RELAY_PIN"
+sargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-cert-sha256 $RELAY_PIN" rargs="--relay-cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
 w=$(mktemp -d)
 stop() { pkill -P $spid 2>/dev/null; kill $spid 2>/dev/null; }  # GNU time's child, then time
 trap 'stop; rm -rf "$w"' EXIT
@@ -34,7 +34,7 @@ if [ "${DROP:-1}" = 1 ]; then
 fi
 src_bytes=$(du -sb "$@" | awk '{s+=$1} END {print s}')
 t0=$(date +%s.%N)
-/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" ${NFLTR_SEND:-nfltr-send} send --once $rargs ${SEND_FLAGS:-} "$@" >"$w/addr" 2>"$w/send.log" &
+/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" ${NFLTR_SEND:-nfltr-send} send --once $sargs ${SEND_FLAGS:-} "$@" >"$w/addr" 2>"$w/send.log" &
 spid=$!
 until grep -q '^nf1' "$w/addr" 2>/dev/null; do
 	kill -0 $spid 2>/dev/null || { echo "sender exited before its address:" >&2; cat "$w/send.log" >&2; exit 1; }

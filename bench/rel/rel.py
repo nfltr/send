@@ -95,7 +95,7 @@ def relay_up():
     for who in ("s", "anon"):
         h = f"{W}/{who}"
         os.makedirs(h, exist_ok=True)
-        ENV[who] = dict(os.environ, HOME=h, NFLTR_CONFIG=f"{h}/config.yaml")
+        ENV[who] = dict(os.environ, HOME=h, NFLTR_CONFIG=f"{h}/config.yaml", NFLTR_RELAY_CERT_SHA256=PIN)
     with open(f"{d}/admin-enrol-code") as code:
         sp.run(["ip", "netns", "exec", "s", f"{B}/nfltr", "config", "set-relay", f"{RELAY}:8443", "--proxy-url",
                 f"https://{RELAY}:8444", "--cert-sha256", PIN, "--code-file", "-"], stdin=code, env=ENV["s"], check=True,
@@ -215,7 +215,7 @@ class Run:
         os.chmod(self.addr, 0o600)
         log = open(f"{self.logdir}/send{self.n}.log", "wb")
         p = sp.Popen(["ip", "netns", "exec", "s", f"{B}/{SEND['s']}", "send", "--once", "--relay", f"{RELAY}:8443",
-                      "--relay-http", f"{RELAY}:8444", "--relay-pin", PIN, src],
+                      "--relay-http", f"{RELAY}:8444", src],
                      stdout=a, stderr=log, env=ENV["anon" if self.c.get("anon") else "s"], start_new_session=True)
         for _ in range(600):
             with open(self.addr) as f:
@@ -229,10 +229,10 @@ class Run:
     def receiver(self, to):
         self.n += 1
         self.rlog = f"{self.logdir}/recv{self.n}.log"
-        args = ["ip", "netns", "exec", "r", f"{B}/{SEND['r']}", "receive", "--json", "--relay-pin", PIN, "--to", to]
+        args = ["ip", "netns", "exec", "r", f"{B}/{SEND['r']}", "receive", "--json", "--to", to]
         if self.c["path"] == "relayed":
             args += ["--direct", "off"]
-        return sp.Popen(args, stdin=open(self.addr), stdout=sp.DEVNULL, stderr=open(self.rlog, "wb"), start_new_session=True)
+        return sp.Popen(args, stdin=open(self.addr), env=dict(os.environ, NFLTR_RELAY_CERT_SHA256=PIN), stdout=sp.DEVNULL, stderr=open(self.rlog, "wb"), start_new_session=True)
 
     def rjson(self):
         js = {}

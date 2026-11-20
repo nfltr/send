@@ -12,13 +12,13 @@
 set -uo pipefail
 rh=$1 file=$2
 RECV_DIR=${RECV_DIR:-/data/in} OUT=${OUT:-results.jsonl}
-rargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-pin $RELAY_PIN"
+sargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-cert-sha256 $RELAY_PIN" rargs="--relay-cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
 size=$(stat -c %s "$file") half=$(($(stat -c %s "$file") / 2))
 w=$(mktemp -d)
 ssh "$rh" "rm -rf $RECV_DIR && mkdir -p $RECV_DIR"
 sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
 t0=$(date +%s.%N)
-/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" ${NFLTR_SEND:-nfltr-send} send --once $rargs "$file" >"$w/addr" 2>"$w/send.log" &
+/usr/bin/time -f '%e %U %S %M' -o "$w/send.time" ${NFLTR_SEND:-nfltr-send} send --once $sargs "$file" >"$w/addr" 2>"$w/send.log" &
 spid=$!
 trap 'pkill -P $spid 2>/dev/null; kill $spid 2>/dev/null; rm -rf "$w"' EXIT
 until grep -q '^nf1' "$w/addr"; do sleep 0.05; done

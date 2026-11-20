@@ -125,7 +125,7 @@ func TestAnonymousAddressRelayedExit12(t *testing.T) {
 
 // TestRelayRefusesAnonymousServing: a relay that takes no address served
 // without an account (nf1.anon.enabled off, the hosted relay's setting)
-// refuses the sender, exit 3.
+// refuses the sender, exit 2 (auth).
 func TestRelayRefusesAnonymousServing(t *testing.T) {
 	r := anonRelay(t, false)
 	src, err := xfer.NewSource([]string{offer(t)})
@@ -144,8 +144,8 @@ func TestRelayRefusesAnonymousServing(t *testing.T) {
 	os.Stderr = stderr
 	_ = pw.Close()
 	msg, _ := io.ReadAll(pr)
-	if code != 3 || !strings.Contains(string(msg), "serves no address without an account") {
-		t.Fatalf("serve exit %d (%s), want 3 saying the relay serves no address without an account", code, msg)
+	if code != 2 || !strings.Contains(string(msg), "serves no address without an account") {
+		t.Fatalf("serve exit %d (%s), want 2 saying the relay serves no address without an account", code, msg)
 	}
 }
 

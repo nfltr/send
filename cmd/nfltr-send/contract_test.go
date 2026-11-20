@@ -9,7 +9,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nfltr/relay/client/nfnet"
 	"github.com/nfltr/relay/client/relaytrust"
 	"github.com/nfltr/send/xfer"
 )
@@ -43,7 +43,7 @@ func TestContractDoc(t *testing.T) {
 		}
 	}
 	documented := map[string][]string{}
-	for _, m := range regexp.MustCompile("(?m)^\\| `--([a-z-]+)[^`]*` \\| ([a-z, ]+) \\|").FindAllStringSubmatch(doc, -1) {
+	for _, m := range regexp.MustCompile("(?m)^\\| `--([a-z0-9-]+)[^`]*` \\| ([a-z, ]+) \\|").FindAllStringSubmatch(doc, -1) {
 		documented[m[1]] = strings.Split(m[2], ", ")
 	}
 	sameMap(t, "flags (name: commands)", code, documented)
@@ -58,17 +58,28 @@ func TestContractDoc(t *testing.T) {
 	for _, m := range regexp.MustCompile("(?m)^\\| (\\d+) \\|\\s*`?([a-z_0-9]*)`?\\s*\\|").FindAllStringSubmatch(doc, -1) {
 		exits[m[1]] = m[2]
 	}
-	codeExits := map[string]string{"0": ""}
-	for n, name := range exitCodes {
-		codeExits[strconv.Itoa(n)] = name
-	}
-	sameMap(t, "exit codes (receive --json's names against the doc)", one(codeExits), one(exits))
-	var inUsage []string
+	usageExits := map[string]string{}
 	block := usage[strings.Index(usage, "Exit status"):strings.Index(usage, "Flags:")]
-	for _, m := range regexp.MustCompile(`(?:^|\s)(\d+) [a-z]`).FindAllStringSubmatch(block, -1) {
-		inUsage = append(inUsage, m[1])
+	for _, m := range regexp.MustCompile(`(?m)(?:^  |, )(\d+)\s+(?:([a-z_0-9]+):)?`).FindAllStringSubmatch(block, -1) {
+		usageExits[m[1]] = m[2]
 	}
-	same(t, "exit codes (the usage text against the doc)", inUsage, slices.Collect(maps.Keys(exits)))
+	sameMap(t, "exit codes (usage text against the doc)", one(usageExits), one(exits))
+	// receive --json names an exit as the relay SDK names its code, and the
+	// table is the SDK's, shared with nfltr-pipe.
+	for n := 1; n < 128; n++ {
+		name := nfnet.Code(n).String()
+		if strings.HasPrefix(name, "code(") {
+			continue
+		}
+		if exits[strconv.Itoa(n)] != name {
+			t.Errorf("the relay SDK's code %d (%s) is %q in the doc's exit table", n, name, exits[strconv.Itoa(n)])
+		}
+	}
+	for _, sig := range []string{"130", "143"} { // a sender stopped: 128 + SIGINT, SIGTERM
+		if _, ok := exits[sig]; !ok {
+			t.Errorf("exit %s (a stopped sender) is not in the doc's exit table", sig)
+		}
+	}
 
 	var docJSON []string
 	for _, m := range regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| (success|failure) \\|").FindAllStringSubmatch(doc, -1) {
@@ -76,9 +87,24 @@ func TestContractDoc(t *testing.T) {
 	}
 	same(t, "receive --json keys", jsonKeys(t), docJSON)
 
-	// A receiver refuses another protocol version: 1.x keeps this one.
-	if !strings.Contains(doc, fmt.Sprintf("protocol is version %d (`xfer.Version`", xfer.Version)) || xfer.Version != 4 {
-		t.Errorf("xfer.Version is %d: every 1.x release speaks 4 (docs/v1-contract.md \"Compatibility\")", xfer.Version)
+	// Every 1.x end speaks version 4; a receiver takes [4, its own].
+	if !strings.Contains(doc, fmt.Sprintf("speaks version %d (`xfer.MinVersion`", xfer.MinVersion)) || xfer.MinVersion != 4 || xfer.Version < xfer.MinVersion {
+		t.Errorf("xfer.MinVersion is %d, Version %d: every 1.x end speaks 4 (docs/v1-contract.md \"Compatibility\")", xfer.MinVersion, xfer.Version)
+	}
+
+	// -h exits 0, as help does; version is a command.
+	for cmd, run := range map[string]func([]string) int{
+		"send":    func(a []string) int { return sendCmd(t.Context(), a) },
+		"receive": func(a []string) int { return receiveCmd(t.Context(), a) },
+	} {
+		var code int
+		stderrOf(t, func() { code = run([]string{"-h"}) })
+		if code != 0 {
+			t.Errorf("%s -h exited %d, want 0", cmd, code)
+		}
+	}
+	if !strings.Contains(doc, "`nfltr-send version`") || !strings.Contains(usage, "nfltr-send version") {
+		t.Error("the version command is missing from the doc or the usage text")
 	}
 }
 
@@ -96,7 +122,7 @@ func flagsOf(t *testing.T, cmd string, run func([]string) int) []string {
 	_ = w.Close()
 	out, _ := io.ReadAll(r)
 	var fs []string
-	for _, m := range regexp.MustCompile(`(?m)^  -([a-z-]+)`).FindAllStringSubmatch(string(out), -1) {
+	for _, m := range regexp.MustCompile(`(?m)^  -([a-z0-9-]+)`).FindAllStringSubmatch(string(out), -1) {
 		fs = append(fs, m[1])
 	}
 	if len(fs) == 0 {

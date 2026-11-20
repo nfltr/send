@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ const usage = `nfltr-send: send files between two machines, end to end encrypted
 Usage:
   nfltr-send send [flags] <file|dir>...
   nfltr-send receive [flags]
+  nfltr-send version
 
 send prints an address (nf1...) and serves the files under it until it is
 stopped (--once: until the first complete transfer). The address is a
@@ -60,9 +62,22 @@ sender offered as it arrives, and nothing lands until every file's BLAKE3
 over what is on disk is that root; a cut transfer is resumed, by itself and by the
 next receive of the same address, from what already arrived and verifies.
 
-Exit status: 0 done, 1 usage, 2 refused by the other side, 3 failed,
-12 no direct path to a sender serving with no account (relaying needs the
-sender's account).
+receive takes no --relay: the address names its relay.
+
+Exit status (the relay SDK's table, shared with nfltr-pipe):
+  0  done (send: --once after its transfer)
+  1  usage: bad flags, address or configuration
+  2  auth: the relay refused this machine's certificate
+  3  not_found: nothing serves at the address
+  4  refused: the other end or the relay refused the transfer
+  5  unreachable: the relay or the sender was not reached in time
+  6  reset: the session was cut, every try (or this receive was stopped)
+  7  e2ee_pin_mismatch: the sender is not the one the address names
+  9  balance_exhausted: the serving account's balance is exhausted
+  10 e2ee_client_refused: the sender refused this receive's proof
+  12 direct_required: no direct path to a sender serving with no account
+     (relaying needs the sender's account)
+  130 send stopped by SIGINT, 143 by SIGTERM
 
 Flags:
 `
@@ -72,7 +87,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(1)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := stopContext()
 	defer stop()
 	var code int
 	switch os.Args[1] {
@@ -82,6 +97,8 @@ func main() {
 		code = receiveCmd(ctx, os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
+	case "version", "--version":
+		fmt.Fprintln(os.Stdout, versionLine())
 	default:
 		fmt.Fprintf(os.Stderr, "nfltr-send: unknown command %q\n\n%s", os.Args[1], usage)
 		code = 1
@@ -89,35 +106,112 @@ func main() {
 	os.Exit(code)
 }
 
-// common are both commands' relay flags.
+// versionLine is the release (the module version the go command stamped
+// from the tag), its commit and the Go version that built it.
+func versionLine() string {
+	v, commit := "(devel)", "unknown"
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		v = firstOf(bi.Main.Version, v)
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				commit = s.Value
+			}
+		}
+	}
+	return fmt.Sprintf("nfltr-send %s %s %s", v, commit, runtime.Version())
+}
+
+// stopped is the cause of a context a signal ended.
+type stopped struct{ sig syscall.Signal }
+
+func (s stopped) Error() string { return "stopped: " + s.sig.String() }
+
+// stopContext ends at SIGINT or SIGTERM with the signal as its cause; a
+// second signal has its default effect.
+func stopContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		if s, ok := <-sigc; ok {
+			signal.Stop(sigc)
+			cancel(stopped{s.(syscall.Signal)})
+		}
+	}()
+	return ctx, func() { signal.Stop(sigc); cancel(nil) }
+}
+
+// stopCode is the exit of a sender a signal stopped (ctx's cause): 128
+// plus the signal's number, 130 for SIGINT, 143 for SIGTERM; 0 for none.
+func stopCode(ctx context.Context) int {
+	if s, ok := errors.AsType[stopped](context.Cause(ctx)); ok {
+		return 128 + int(s.sig)
+	}
+	return 0
+}
+
+// common are the relay flags: --relay and --relay-http send's only (the
+// address names its relay).
 type common struct {
 	relay, relayHTTP, pin, direct *string
 	saved                         savedRelay
 }
 
-// addCommon adds the relay flags. The relay is --relay, else
-// $NFLTR_SEND_RELAY, else the one `nfltr config set-relay` saved (with its
-// HTTPS URL and certificate pin), else grpc.nfltr.xyz:443.
-func addCommon(fs *flag.FlagSet) common {
+// addCommon adds the relay flags (serving: send's). The relay is --relay,
+// else $NFLTR_SEND_RELAY, else the one `nfltr config set-relay` saved
+// (with its HTTPS URL and certificate pin), else grpc.nfltr.xyz:443.
+func addCommon(fs *flag.FlagSet, serving bool) common {
 	saved := loadSavedRelay()
-	return common{
-		relay:     fs.String("relay", env("NFLTR_SEND_RELAY", firstOf(saved.Server, defaultRelay)), "relay agent-link `address` (send); $NFLTR_SEND_RELAY, else the relay nfltr config set-relay saved"),
-		relayHTTP: fs.String("relay-http", "", "relay HTTP `address` the address names; default: the saved relay's --proxy-url host with the saved relay, else --relay without its grpc. prefix and port 443"),
-		pin:       fs.String("relay-pin", env(relaytrust.PinEnv, saved.Pin), "accept the relay certificate with this SHA-256 `fingerprint` (a private relay's); $"+relaytrust.PinEnv+", else the saved relay's"),
-		direct:    fs.String("direct", "on", "direct paths: `mode` on (LAN first, then the lowest round trip) or off (relayed only)"),
-		saved:     saved,
+	c := common{
+		pin:    fs.String("relay-cert-sha256", env(relaytrust.PinEnv, saved.Pin), "accept the relay certificate with this SHA-256 `fingerprint` (a private relay's); $"+relaytrust.PinEnv+", else the saved relay's"),
+		direct: fs.String("direct", "on", "direct paths: `mode` on (LAN first, then the lowest round trip) or off (relayed only)"),
+		saved:  saved,
 	}
+	if serving {
+		c.relay = fs.String("relay", env("NFLTR_SEND_RELAY", firstOf(saved.Server, defaultRelay)), "relay agent-link `address`; $NFLTR_SEND_RELAY, else the relay nfltr config set-relay saved")
+		c.relayHTTP = fs.String("relay-http", "", "relay HTTP `address` the address names; default: the saved relay's --proxy-url host with the saved relay, else --relay without its grpc. prefix and port 443")
+	}
+	return c
+}
+
+// parse parses args into fs quietly: -h prints the usage and fs's flags
+// on stderr (help), and an error is the caller's to say: one line, a
+// relay flag receive does not take named as such.
+func parse(fs *flag.FlagSet, args []string) (help bool, err error) {
+	fs.SetOutput(io.Discard)
+	err = fs.Parse(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		fmt.Fprint(os.Stderr, usage)
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+		return true, nil
+	case err == nil:
+		return false, nil
+	}
+	for _, f := range []string{"relay", "relay-http"} {
+		if err.Error() == "flag provided but not defined: -"+f {
+			return false, fmt.Errorf("receive takes no --%s: the address names its relay", f)
+		}
+	}
+	return false, fmt.Errorf("%w (%s -h lists the flags)", err, fs.Name())
 }
 
 func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
+	if *c.direct != "on" && *c.direct != "off" {
+		return nfnet.Config{}, nfnet.DirectOff, fmt.Errorf("--direct %q: want on or off", *c.direct)
+	}
 	mode, err := agent.ParseDirectMode(*c.direct)
 	if err != nil {
 		return nfnet.Config{}, nfnet.DirectOff, fmt.Errorf("--direct: %w", err)
 	}
 	if *c.pin != "" {
 		if _, err := relaytrust.ParsePin(*c.pin); err != nil {
-			return nfnet.Config{}, nfnet.DirectOff, err
+			return nfnet.Config{}, nfnet.DirectOff, fmt.Errorf("--relay-cert-sha256: %w", err)
 		}
+	}
+	if c.relay == nil { // receive: the address names the relay; this machine's own (the saved one) serves its direct paths' discovery
+		return nfnet.Config{AgentRelay: firstOf(c.saved.Server, defaultRelay), RelayTLS: relaytrust.WithPin(nil, *c.pin)}, mode, nil
 	}
 	http := *c.relayHTTP
 	if http == "" && *c.relay == c.saved.Server {
@@ -133,12 +227,14 @@ func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
 
 func sendCmd(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("nfltr-send send", flag.ContinueOnError)
-	cf := addCommon(fs)
+	cf := addCommon(fs, true)
 	machineFile := fs.String("machine-credential", "", "this machine's certificate `file` (machine.json, machine.key beside it); default: the one nfltr config login saved")
 	once := fs.Bool("once", false, "exit after the first complete transfer")
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
-	if err := fs.Parse(args); err != nil {
-		return 1
+	if help, err := parse(fs, args); help || err != nil {
+		if help {
+			return 0
+		}
+		return fail(1, err)
 	}
 	if fs.NArg() == 0 {
 		return fail(1, errors.New("send: name the files and directories to send"))
@@ -188,11 +284,14 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 		l, err = l.WithDirect()
 	}
 	if err != nil {
-		return fail(3, err)
+		return fail(1, err)
 	}
 	ln, err := nfnet.Listen(ctx, cfg, "send", nfnet.ListenOptions{Address: l, Direct: mode})
 	if err != nil {
-		return fail(3, relayHint(enrolHint(err, anon), cfg.AgentRelay))
+		if code := stopCode(ctx); code != 0 {
+			return code
+		}
+		return fail(codeOr(err, nfnet.CodeUnreachable), relayHint(enrolHint(err, anon), cfg.AgentRelay))
 	}
 	defer ln.Close() //nolint:errcheck
 	files, bytes := src.Files()
@@ -215,14 +314,14 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	for {
 		c, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return 0
-			}
 			if ending.Load() {
 				<-done
 				return 0
 			}
-			return fail(3, relayHint(enrolHint(err, anon), cfg.AgentRelay))
+			if ctx.Err() != nil {
+				return stopCode(ctx)
+			}
+			return fail(codeOr(err, nfnet.CodeReset), relayHint(enrolHint(err, anon), cfg.AgentRelay))
 		}
 		sessions.take(c, func(c net.Conn) {
 			defer c.Close() //nolint:errcheck
@@ -298,19 +397,29 @@ func (l limiter) take(c net.Conn, serve func(net.Conn)) {
 
 func receiveCmd(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("nfltr-send receive", flag.ContinueOnError)
-	cf := addCommon(fs)
+	cf := addCommon(fs, false)
 	addrFile := fs.String("address-file", "-", "read the address from this `file` (mode 0600), or - for stdin")
 	to := fs.String("to", ".", "receive into this `directory`")
 	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last, or after a commit whose session was cut tells the sender again")
-	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths (each path used, in order); on failure instead exit, code (usage, refused, failed, direct_required) and error")
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		if err == nil {
-			fmt.Fprintln(os.Stderr, "receive: no arguments (the address comes from --address-file)")
-		}
-		return 1
+	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths (each path used, in order); on failure instead exit, code (the exit status's name) and error")
+	help, err := parse(fs, args)
+	if help {
+		return 0
+	}
+	if err == nil && fs.NArg() != 0 {
+		err = errors.New("receive: no arguments (the address comes from --address-file)")
+	}
+	if err == nil && os.Getenv("NFLTR_SEND_RELAY") != "" {
+		err = errors.New("receive: $NFLTR_SEND_RELAY is set: the address names its relay; unset it for receive")
+	}
+	if err != nil {
+		return failTo(os.Stderr, *asJSON, 1, err)
 	}
 	fail := func(code int, err error) int { return failTo(os.Stderr, *asJSON, code, err) }
+	cfg, mode, err := cf.config()
+	if err != nil {
+		return fail(1, err)
+	}
 	addr, err := readAddress(*addrFile)
 	if err != nil {
 		return fail(1, err)
@@ -319,11 +428,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	if err != nil || t.Kind != nfnet.AddressTarget {
 		return fail(1, fmt.Errorf("--address-file: want an nf1... address (%v)", err))
 	}
-	cfg, mode, err := cf.config()
-	if err != nil {
-		return fail(1, err)
-	}
-	cfg.Relay = t.Address.Relay // --relay-pin verifies the address's relay
+	cfg.Relay = t.Address.Relay // --relay-cert-sha256 verifies the address's relay
 	return receiveTo(ctx, os.Stderr, cfg, t, mode, *to, *tries, *asJSON)
 }
 
@@ -416,19 +521,42 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 			mu.Unlock()
 			return 0
 		case err == nil || errors.Is(err, xfer.ErrRefused):
-			return fail(2, fmt.Errorf("refused: %s", firstOf(a.Message, fmt.Sprint(err))))
+			return fail(int(nfnet.CodeRefused), fmt.Errorf("refused: %s", firstOf(a.Message, fmt.Sprint(err))))
 		case ctx.Err() != nil:
-			return fail(3, fmt.Errorf("stopped; receive the same address again to resume (%w)", err))
+			return fail(int(nfnet.CodeReset), fmt.Errorf("stopped; receive the same address again to resume (%w)", err))
 		case nfnet.CodeOf(err) == nfnet.CodeDirectRequired && errors.As(err, new(openError)):
 			// a session that opened and lost its direct path resumes; one
 			// that found none ends here
-			return fail(12, fmt.Errorf("%w (the sender runs `nfltr config login`); receive the same address again to resume", err))
-		case try >= tries || errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError)):
-			return fail(3, fmt.Errorf("%w; receive the same address again to resume", err))
+			return fail(int(nfnet.CodeDirectRequired), fmt.Errorf("%w (the sender runs `nfltr config login`); receive the same address again to resume", err))
+		case try >= tries || final(err):
+			def := nfnet.CodeReset
+			if errors.As(err, new(openError)) {
+				def = nfnet.CodeUnreachable
+			}
+			return fail(codeOr(err, def), fmt.Errorf("%w; receive the same address again to resume", err))
 		}
 		fmt.Fprintf(w, "session %d ended (%v); resuming\n", try, err)
 		wait(ctx, try)
 	}
+}
+
+// final: err is no reason to try another session (a protocol error, the
+// relay's certificate refused, or a code another session would only
+// repeat).
+func final(err error) bool {
+	switch nfnet.CodeOf(err) {
+	case nfnet.CodeUsage, nfnet.CodeAuth, nfnet.CodeRefused, nfnet.CodeE2EEPinMismatch, nfnet.CodeBalanceExhausted, nfnet.CodeE2EEClientRefused:
+		return true
+	}
+	return errors.Is(err, xfer.ErrProtocol) || errors.As(err, new(*tls.CertificateVerificationError))
+}
+
+// codeOr is err's exit status on nfnet's table, def where it types none.
+func codeOr(err error, def nfnet.Code) int {
+	if code := nfnet.CodeOf(err); code != 0 {
+		return int(code)
+	}
+	return int(def)
 }
 
 // wait is the pause before session try+1.
@@ -571,9 +699,6 @@ func firstOf(a, b string) string {
 
 func fail(code int, err error) int { return failTo(os.Stderr, false, code, err) }
 
-// exitCodes names receive's exit statuses in its --json failure object.
-var exitCodes = map[int]string{1: "usage", 2: "refused", 3: "failed", 12: "direct_required"}
-
 // failTo says why to w once: as a line, or (asJSON) as one JSON object
 // with the exit status, its code and the message.
 func failTo(w io.Writer, asJSON bool, code int, err error) int {
@@ -581,7 +706,7 @@ func failTo(w io.Writer, asJSON bool, code int, err error) int {
 		fmt.Fprintln(w, "nfltr-send:", err)
 		return code
 	}
-	b, _ := json.Marshal(map[string]any{"exit": code, "code": exitCodes[code], "error": err.Error()})
+	b, _ := json.Marshal(map[string]any{"exit": code, "code": nfnet.Code(code).String(), "error": err.Error()})
 	fmt.Fprintln(w, string(b))
 	return code
 }

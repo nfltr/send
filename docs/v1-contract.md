@@ -15,6 +15,8 @@ code's.
 | `nfltr-send send [flags] <file\|dir>...` | serves the files and directories under a fresh address, printed on stdout (a line of its own), until it is stopped, or with `--once` until the first complete transfer |
 | `nfltr-send receive [flags]` | reads the address from `--address-file` (default stdin; never the command line) and writes the offer into `--to`; resumes a cut transfer, by itself and at the next `receive` of the same address |
 | `nfltr-send help`, `-h`, `--help` | the usage text on stdout, exit 0 |
+| `nfltr-send send -h`, `nfltr-send receive -h` | the usage text and the command's flags on stderr, exit 0 |
+| `nfltr-send version`, `--version` | one line on stdout, exit 0: `nfltr-send <version> <commit> <go>`, the module version the go command stamped from the release's tag (a pseudo-version for a build from a checkout), the commit (`unknown` when built from the module proxy) and the Go version that built it |
 
 A receive commits only once every file on its disk is the offer's BLAKE3
 root; a name that already exists in `--to` refuses the transfer.
@@ -23,10 +25,10 @@ root; a name that already exists in `--to` refuses the transfer.
 
 | flag | commands | default | meaning |
 |---|---|---|---|
-| `--relay <address>` | send, receive | `$NFLTR_SEND_RELAY`, else the relay `nfltr config set-relay` saved, else `grpc.nfltr.xyz:443` | the relay's agent-link address the sender registers at (receive ignores it: the address names its relay) |
-| `--relay-http <address>` | send, receive | the saved relay's `--proxy-url` host, else `--relay` without its `grpc.` prefix; port 443 dropped | the relay HTTP host the address names (receive ignores it) |
-| `--relay-pin <sha256>` | send, receive | `$NFLTR_RELAY_CERT_SHA256`, else the saved relay's pin | accept the relay's certificate by its SHA-256 fingerprint (a private relay's); on receive it verifies the address's relay |
-| `--direct on\|off` | send, receive | `on` | `on`: a direct path (QUIC) when the networks allow one, LAN first; `off`: relayed only (refused on send with no machine certificate) |
+| `--relay <address>` | send | `$NFLTR_SEND_RELAY`, else the relay `nfltr config set-relay` saved, else `grpc.nfltr.xyz:443` | the relay's agent-link address the sender registers at |
+| `--relay-http <address>` | send | the saved relay's `--proxy-url` host, else `--relay` without its `grpc.` prefix; port 443 dropped | the relay HTTP host the address names |
+| `--relay-cert-sha256 <sha256>` | send, receive | `$NFLTR_RELAY_CERT_SHA256`, else the saved relay's pin | accept the relay's certificate by its SHA-256 fingerprint (a private relay's); on receive it verifies the address's relay |
+| `--direct on\|off` | send, receive | `on` | `on`: a direct path (QUIC) when the networks allow one, LAN first; `off`: relayed only (refused on send with no machine certificate); any other value is a usage error |
 | `--machine-credential <file>` | send | `machine.json` beside the nfltr config file | this machine's certificate (`machine.key` beside it, readable by its owner only), renewed in place while serving; with none at the default the address is served with no account: direct paths only |
 | `--once` | send | off | exit after the first complete transfer |
 | `--address-file <file>` | receive | `-` (stdin) | where the address is read from (a file others may read is refused, except on Windows) |
@@ -35,26 +37,73 @@ root; a name that already exists in `--to` refuses the transfer.
 | `--json` | receive | off | end with one JSON line on stderr (below) |
 
 Flags are Go `flag` syntax: `-flag value`, `--flag value`, `--flag=value`.
+receive takes no relay: `--relay`, `--relay-http` or `$NFLTR_SEND_RELAY`
+set is a usage error (exit 1), since the address names its relay.
 
 ## Environment
 
 | variable | read by | meaning |
 |---|---|---|
-| `$NFLTR_SEND_RELAY` | send, receive | `--relay`'s default |
-| `$NFLTR_RELAY_CERT_SHA256` | send, receive | `--relay-pin`'s default (the relay SDK's name, shared with nfltr) |
+| `$NFLTR_SEND_RELAY` | send, receive | send: `--relay`'s default; receive refuses it set |
+| `$NFLTR_RELAY_CERT_SHA256` | send, receive | `--relay-cert-sha256`'s default (the relay SDK's name, shared with nfltr) |
 | `$NFLTR_CONFIG` | send, receive | the nfltr config file (default `~/.config/nfltr/nfltr.json`): its saved relay (`server`, `proxy_url`, `relay_cert_sha256`; nothing of an account), and the directory of `machine.json` |
 
 ## Exit codes
 
-| exit | code | meaning | when |
-|---|---|---|---|
-| 0 | | done | receive: every file committed; send: stopped (SIGINT, SIGTERM), or `--once` after its transfer |
-| 1 | `usage` | bad flags, address or configuration | before any connection |
-| 2 | `refused` | refused by the other side | receive: a name exists in `--to`, the sender is busy or refused the commit |
-| 3 | `failed` | failed | receive: `--tries` sessions failed, the relay or the sender was not reached, a protocol mismatch, a certificate refused; send: the relay refused or ended the address |
-| 12 | `direct_required` | no direct path to a sender serving with no account | receive: no direct path formed (a session that opened and lost it resumes first) |
+One table for nfltr-send and nfltr-pipe: the relay SDK's (`nfnet.Code`),
+named as the SDK names them, so a number means the same in both and in
+`nfltr cat pipe`.
 
-`code` is the name receive `--json` gives the exit.
+| exit | code | meaning |
+|---|---|---|
+| 0 | | done |
+| 1 | `usage` | bad flags, address or configuration, before any connection |
+| 2 | `auth` | the relay refused this machine's certificate, or serves no address without an account (a relay account state) |
+| 3 | `not_found` | nothing serves at the address |
+| 4 | `refused` | the other end or the relay refused |
+| 5 | `unreachable` | the relay or the other end was not reached in time |
+| 6 | `reset` | the session was cut |
+| 7 | `e2ee_pin_mismatch` | the other end is not the one the address names |
+| 9 | `balance_exhausted` | the serving account's balance is exhausted (a relay account state) |
+| 10 | `e2ee_client_refused` | the other end refused this end's proof: the address's secret is not its |
+| 12 | `direct_required` | no direct path to an end serving with no account, or that path was lost |
+
+8 and 11 are not used (the relay SDK leaves them to other programs).
+nfltr-send's sender adds the shell's exits for a stop:
+
+| exit | code | meaning |
+|---|---|---|
+| 130 | | send stopped by SIGINT |
+| 143 | | send stopped by SIGTERM |
+
+When nfltr-send exits with each:
+
+- 0: receive: every file committed; send: `--once` after its transfer.
+- 1: a flag (receive given a relay, `--direct` neither on nor off), the
+  address, the address file, the machine certificate, send's `--direct
+  off` with no certificate.
+- 2: send: the relay refused the machine certificate at registration, or
+  serves no address without an account.
+- 3: receive: the sender stopped, never ran, or its `--once` transfer
+  ended.
+- 4: receive: a name exists in `--to`, the sender is busy (16 sessions)
+  or refused the commit, the sender speaks no protocol version from 4 to
+  the receiver's own; the relay's limits.
+- 5: the relay or the sender not reached within the open bound; the
+  relay's certificate refused (`--relay-cert-sha256`).
+- 6: receive: the last of `--tries` sessions cut, a protocol error, the
+  receive stopped (SIGINT, SIGTERM; receive the address again to
+  resume); send: the relay ended the address.
+- 7, 10: receive: the sender's key is not the address's; the sender
+  refused this receive's proof.
+- 9: either, on a relay that bills.
+- 12: receive: no direct path formed (a session that opened and lost it
+  resumes first).
+- 130, 143: send stopped by a signal, before or during a transfer.
+
+receive tries another session after 3, 5 and 6 (up to `--tries`); 1, 2,
+4, 7, 9, 10, a protocol error and a refused relay certificate end it at
+once. `code` is the name receive `--json` gives the exit.
 
 ## receive --json
 
@@ -92,9 +141,14 @@ sender prints.
 A 1.x end works with any 1.x end, both ways: a sender of one 1.x release
 and a receiver of another complete a transfer of a file and of many
 small files, resume a transfer cut at either end, and end with the exit
-codes above, relayed and direct, and with a sender with no account. The
-transfer protocol is version 4 (`xfer.Version`, in the manifest) for all
-of 1.x: a receiver refuses another version. `make cross-version`
+codes above, relayed and direct, and with a sender with no account.
+Every 1.x end speaks version 4 (`xfer.MinVersion`) of the transfer
+protocol. The sender names its highest version in the manifest (a frame
+that stays version 4's in all of 1.x); the receiver takes any from 4 to
+its own (`xfer.Version`), names the lower of the two in its answer (the
+want), and both speak that one; a receiver refuses a manifest below 4
+(exit 4), a sender a want outside 4 to its own. A v0.1 receiver names
+none, which is 4. `make cross-version`
 (`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
 `make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
@@ -120,35 +174,3 @@ darwin and windows on amd64 and arm64, `SHA256SUMS`, and
   throughput, memory.
 - Builds with `-tags sendtrace` (`$SENDTRACE`), the relay SDK's own
   diagnostics variables, and the Go packages (`xfer` is not a 1.x API).
-
-## Before freezing: cut or rename
-
-For the owner's decision; nothing here is changed yet.
-
-1. **The exit table is coarser than the SDK's**: 3 (`failed`) covers
-   unreachable, not found, reset, a wrong pin and a refused secret,
-   which nfltr-pipe and the relay SDK tell apart (5, 3, 6, 7, 10). Adopt
-   the SDK's table before 1.0 (afterwards it is a 2.0), or keep 3.
-2. **`receive --relay` and `receive --relay-http`**: accepted and
-   ignored (the address names its relay); `$NFLTR_SEND_RELAY` too. Cut
-   them from receive.
-3. **`--relay-pin` and `$NFLTR_RELAY_CERT_SHA256`**: the flag and its
-   variable have different names. The variable is the SDK's and nfltr's;
-   rename the flag `--relay-cert-sha256` (nfltr's `config set-relay
-   --cert-sha256`), or keep both as they are.
-4. **`--direct` takes more than on|off**: the SDK also accepts `true`,
-   `false` and the empty string (as off). Accept only `on` and `off`.
-5. **The protocol version is an equality**: a receiver refuses any
-   version but its own (`update both ends`), so a 1.x protocol change
-   breaks every older 1.x end. Before 1.0, make the receiver accept a
-   range (each 1.x reads every 1.x manifest), or promise version 4 for
-   all of 1.x (as this doc does; the test pins it).
-6. **A stopped sender exits 0** (SIGINT, SIGTERM), the same as a
-   `--once` sender whose transfer completed. Keep (a server stopped is
-   not a failure), or give a stop before any transfer its own code.
-7. **`send -h` and `receive -h` exit 1**, `help` and `-h` alone exit 0.
-   Make a command's `-h` exit 0.
-8. **No `version` command**: neither end can say which release it is.
-   Add `nfltr-send version` (possible in 1.x, better in 1.0).
-9. **Resuming across releases** (above, not covered): decide whether a
-   1.x stage is a 1.x promise.

@@ -60,7 +60,7 @@ Measurements per change: [`docs/performance.md`](docs/performance.md).
   moved into place no longer holds what was offered (someone deleted it
   and made another). One `receive` of an offer into a directory at a time: a second
   one, while the first holds the offer's hidden directory (a lock on a
-  file in it), is refused (exit 2).
+  file in it), is refused (exit 4).
 - **Commit.** Each top-level name of the offer is renamed into place on
   its own: one top-level entry (a file, or a directory with everything
   under it) appears at once; an offer of several top-level names can show
@@ -85,7 +85,7 @@ permission is refused. On Windows the file's mode does not reflect its ACL (ever
 writable file reports 0666), so the mode is not checked there: keep the
 file in a directory only you can read, such as your user profile.
 Whoever holds the address can open sessions: the sender serves at most 16
-at once (a receiver past that is refused, exit 2; in a flood, sessions
+at once (a receiver past that is refused, exit 4; in a flood, sessions
 past a few refusals under way are closed outright). A session whose peer is
 gone ends with its connection (the relay link's and the direct path's
 liveness checks).
@@ -115,7 +115,7 @@ peer to peer:
   session; the next one resumes, or exits 12 if no path forms again.
   `--direct off` with no certificate is refused. A relay that takes no
   address served without an account (setting `nf1.anon.enabled`, off by
-  default) refuses the sender (exit 3).
+  default) refuses the sender (exit 2, `auth`).
 
 ## What the sender refuses
 
@@ -123,8 +123,9 @@ peer to peer:
 - Anything that is not a regular file or a directory (a symlink, a device).
 - Two sources with the same base name.
 
-The receiver refuses a peer of another protocol version ("update both
-ends"), and the sender a machine certificate issued for another relay.
+Every 1.x end speaks protocol version 4; the receiver takes any version
+from 4 to its own and both speak the lower. The sender refuses a machine
+certificate issued for another relay.
 
 ## Flags and exit codes
 
@@ -133,22 +134,31 @@ the address, compatibility): [docs/v1-contract.md](docs/v1-contract.md).
 
 `send`: `--once` (exit after the first complete transfer), `--direct
 on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http`,
-`--relay-pin <sha256>` (a private relay's certificate).
+`--relay-cert-sha256 <sha256>` (a private relay's certificate).
 The relay is `--relay`, else `$NFLTR_SEND_RELAY`, else the one `nfltr config
 set-relay` saved (with its HTTPS URL and certificate pin; nothing of an
 account is read), else `grpc.nfltr.xyz:443`; an error connecting names the
 relay and `--relay`.
-`receive`: `--to <dir>`, `--address-file <file>` (default stdin),
+`receive` (no `--relay`: the address names its relay; `--relay`,
+`--relay-http` or `$NFLTR_SEND_RELAY` set is a usage error):
+`--to <dir>`, `--address-file <file>` (default stdin), `--direct on|off`,
+`--relay-cert-sha256 <sha256>`,
 `--tries <n>` (default 10, each session resuming the last; after a
 commit whose session was cut before the sender read the answer, the
 remaining sessions tell the sender again, so a `--once` sender ends), `--json` (one
 JSON line on stderr: the totals and `paths`, each path the transfer used;
-on failure instead `exit`, `code` (`usage`, `refused`, `failed`,
-`direct_required`) and `error`, the exit status unchanged). `nfltr-send <command> -h` lists them all.
+on failure instead `exit`, `code` (the exit's name below) and `error`,
+the exit status unchanged). `nfltr-send <command> -h` lists them all
+(exit 0); `nfltr-send version` prints the release, its commit and the Go
+version.
 
-Exit codes: 0 done, 1 usage, 2 refused (a name exists, busy, too many
-sessions, a commit refused), 3 failed, 12 `direct_required` (no direct
-path and no account to relay).
+Exit codes, the relay SDK's table, the same as nfltr-pipe's: 0 done, 1
+`usage`, 2 `auth`, 3 `not_found`, 4 `refused` (a name exists, the sender
+busy, a commit refused), 5 `unreachable`, 6 `reset`, 7
+`e2ee_pin_mismatch`, 9 `balance_exhausted`, 10 `e2ee_client_refused`,
+12 `direct_required` (no direct path and no account to relay); a sender
+stopped by SIGINT exits 130, by SIGTERM 143 (`--once` after its transfer:
+0).
 
 ## Tested across NATs
 
