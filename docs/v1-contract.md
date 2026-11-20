@@ -27,7 +27,7 @@ root; a name that already exists in `--to` refuses the transfer.
 |---|---|---|---|
 | `--relay <address>` | send | `$NFLTR_SEND_RELAY`, else the relay `nfltr config set-relay` saved, else `grpc.nfltr.xyz:443` | the relay's agent-link address the sender registers at |
 | `--relay-http <address>` | send | the saved relay's `--proxy-url` host, else `--relay` without its `grpc.` prefix; port 443 dropped | the relay HTTP host the address names |
-| `--relay-cert-sha256 <sha256>` | send, receive | `$NFLTR_RELAY_CERT_SHA256`, else the saved relay's pin | accept the relay's certificate by its SHA-256 fingerprint (a private relay's); on receive it verifies the address's relay |
+| `--cert-sha256 <sha256>` | send, receive | `$NFLTR_RELAY_CERT_SHA256`, else the saved relay's pin | accept the relay's certificate by its SHA-256 fingerprint (a private relay's); on receive it verifies the address's relay |
 | `--direct on\|off` | send, receive | `on` | `on`: a direct path (QUIC) when the networks allow one, LAN first; `off`: relayed only (refused on send with no machine certificate); any other value is a usage error |
 | `--machine-credential <file>` | send | `machine.json` beside the nfltr config file | this machine's certificate (`machine.key` beside it, readable by its owner only), renewed in place while serving; with none at the default the address is served with no account: direct paths only |
 | `--once` | send | off | exit after the first complete transfer |
@@ -49,7 +49,7 @@ send only.
 | variable | read by | meaning |
 |---|---|---|
 | `$NFLTR_SEND_RELAY` | send | `--relay`'s default; receive ignores it (the address names its relay; the variable applies to send only) |
-| `$NFLTR_RELAY_CERT_SHA256` | send, receive | `--relay-cert-sha256`'s default (the relay SDK's name, shared with nfltr) |
+| `$NFLTR_RELAY_CERT_SHA256` | send, receive | `--cert-sha256`'s default (the relay SDK's name, shared with nfltr) |
 | `$NFLTR_CONFIG` | send, receive | the nfltr config file (default `~/.config/nfltr/nfltr.json`): its saved relay (`server`, `proxy_url`, `relay_cert_sha256`; nothing of an account), and the directory of `machine.json` |
 
 ## Exit codes
@@ -95,7 +95,7 @@ When nfltr-send exits with each:
   or refused the commit, the sender speaks no protocol version from 4 to
   the receiver's own; the relay's limits.
 - 5: the relay or the sender not reached within the open bound; the
-  relay's certificate refused (`--relay-cert-sha256`).
+  relay's certificate refused (`--cert-sha256`).
 - 6: receive: the last of `--tries` sessions cut, a protocol error, the
   receive stopped (SIGINT, SIGTERM, SIGHUP; receive the address again
   to resume); send: the relay ended the address.

@@ -19,6 +19,10 @@ These change what scripts see; v1.0 keeps them.
   outside this repository imported it.
 - The built binary `cmd/nfltr-send/nfltr-send` committed in v0.1.8 is
   removed, and a test keeps binaries out.
+- **`--relay-cert-sha256` is now `--cert-sha256`**, the name `nfltr config
+  set-relay` and nfltr's `cat` commands use (one name in all three tools);
+  `--relay-cert-sha256` is refused. `$NFLTR_RELAY_CERT_SHA256` is
+  unchanged.
 
 ## v0.1.9
 

@@ -12,7 +12,7 @@
 set -uo pipefail
 rh=$1 file=$2
 RECV_DIR=${RECV_DIR:-/data/in} OUT=${OUT:-results.jsonl}
-sargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-cert-sha256 $RELAY_PIN" rargs="--relay-cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
+sargs="--relay $RELAY --relay-http $RELAY_HTTP --cert-sha256 $RELAY_PIN" rargs="--cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
 size=$(stat -c %s "$file") half=$(($(stat -c %s "$file") / 2))
 w=$(mktemp -d)
 ssh "$rh" "rm -rf $RECV_DIR && mkdir -p $RECV_DIR"

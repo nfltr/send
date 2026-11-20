@@ -28,13 +28,14 @@ func TestReceiveRefusesARelayAndDirectIsOnOrOff(t *testing.T) {
 		args []string
 		say  string
 	}{
-		"--relay":            {"", []string{"--relay", "x:443"}, "takes no --relay"},
-		"--relay=":           {"", []string{"--relay=x:443"}, "takes no --relay"},
-		"--relay-http":       {"", []string{"--relay-http", "x"}, "takes no --relay-http"},
-		"$NFLTR_SEND_RELAY":  {"x:443", nil, "open /nonexistent"}, // ignored: on to the address file
-		"--direct true":      {"", []string{"--direct", "true"}, `--direct "true": want on or off`},
-		"--direct (empty)":   {"", []string{"--direct="}, `--direct "": want on or off`},
-		"--relay-pin (gone)": {"", []string{"--relay-pin", "00"}, "not defined: -relay-pin"},
+		"--relay":                    {"", []string{"--relay", "x:443"}, "takes no --relay"},
+		"--relay=":                   {"", []string{"--relay=x:443"}, "takes no --relay"},
+		"--relay-http":               {"", []string{"--relay-http", "x"}, "takes no --relay-http"},
+		"$NFLTR_SEND_RELAY":          {"x:443", nil, "open /nonexistent"}, // ignored: on to the address file
+		"--direct true":              {"", []string{"--direct", "true"}, `--direct "true": want on or off`},
+		"--direct (empty)":           {"", []string{"--direct="}, `--direct "": want on or off`},
+		"--relay-pin (gone)":         {"", []string{"--relay-pin", "00"}, "not defined: -relay-pin"},
+		"--relay-cert-sha256 (gone)": {"", []string{"--relay-cert-sha256", "00"}, "not defined: -relay-cert-sha256"},
 	} {
 		t.Setenv("NFLTR_SEND_RELAY", c.env)
 		var code int

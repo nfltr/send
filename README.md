@@ -134,7 +134,7 @@ the address, compatibility): [docs/v1-contract.md](docs/v1-contract.md).
 
 `send`: `--once` (exit after the first complete transfer), `--direct
 on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http`,
-`--relay-cert-sha256 <sha256>` (a private relay's certificate).
+`--cert-sha256 <sha256>` (a private relay's certificate).
 The relay is `--relay`, else `$NFLTR_SEND_RELAY`, else the one `nfltr config
 set-relay` saved (with its HTTPS URL and certificate pin; nothing of an
 account is read), else `grpc.nfltr.xyz:443`; an error connecting names the
@@ -142,7 +142,7 @@ relay and `--relay`.
 `receive` (no `--relay`: the address names its relay; `--relay` or
 `--relay-http` is a usage error, `$NFLTR_SEND_RELAY` is ignored):
 `--to <dir>`, `--address-file <file>` (default stdin), `--direct on|off`,
-`--relay-cert-sha256 <sha256>`,
+`--cert-sha256 <sha256>`,
 `--tries <n>` (default 10, each session resuming the last; after a
 commit whose session was cut before the sender read the answer, the
 remaining sessions tell the sender again, so a `--once` sender ends), `--json` (one

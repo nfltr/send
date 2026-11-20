@@ -23,7 +23,7 @@ set -uo pipefail
 tag=$1 rh=$2; shift 2
 : "${RELAY:?}" "${RELAY_HTTP:?}" "${RELAY_PIN:?}"
 RECV_DIR=${RECV_DIR:-/data/in} OUT=${OUT:-results.jsonl} TIMEOUT=${TIMEOUT:-3600}
-sargs="--relay $RELAY --relay-http $RELAY_HTTP --relay-cert-sha256 $RELAY_PIN" rargs="--relay-cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
+sargs="--relay $RELAY --relay-http $RELAY_HTTP --cert-sha256 $RELAY_PIN" rargs="--cert-sha256 $RELAY_PIN" # receive takes no --relay: the address names it
 w=$(mktemp -d)
 stop() { pkill -P $spid 2>/dev/null; kill $spid 2>/dev/null; }  # GNU time's child, then time
 trap 'stop; rm -rf "$w"' EXIT

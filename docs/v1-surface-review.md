@@ -22,7 +22,7 @@ every "change" below is applied in this lane (CHANGELOG.md
 | 7 | CLI | receive takes the address only from `--address-file` (default stdin); nfltr-pipe's dial also takes it as an argument | kept: different on purpose. A send address serves until the sender stops (one holder can receive many times), so it never goes on a command line other users see; a pipe address is spent by its one session and the listener exits. `nfltr cat` refuses it on the command line too |
 | 8 | CLI | the address is printed on stdout; nfltr-pipe prints it on stderr | kept: nfltr-pipe's stdout is the session's bytes |
 | 9 | exit codes | 130/143 for a stopped sender while nfltr-pipe exits 6 when stopped | kept: send serves until it is stopped, so a stop is its normal end and must differ from a failure (6) and from a `--once` sender's completed transfer (0); a pipe end stopped mid-session cut the session (6) |
-| 10 | naming | `--relay` / `$NFLTR_SEND_RELAY` and `--relay-cert-sha256` here and in nfltr-pipe; nfltr's cat commands say `--server` / `$NFLTR_SERVER` and `--pin-cert` | kept here: the two products agree with each other and with `nfltr config set-relay --cert-sha256`; nfltr's cat flag names are nfltr's own (named for its follow-up below) |
+| 10 | naming | `--relay` / `$NFLTR_SEND_RELAY` and `--relay-cert-sha256` here and in nfltr-pipe; nfltr's cat commands say `--server` / `$NFLTR_SERVER` and `--pin-cert`, `nfltr config set-relay` says `--cert-sha256` | `--cert-sha256` in all three (nfltr's decision, docs/decisions/relay-pin-flag-name-2026-11-20.md, lane UXNEXT): the name the relay SDK's hint and `nfltr-relay`'s enrolment lines already print; `--relay-cert-sha256` is refused. `--relay` stays (nfltr's `--server` is nfltr's own) |
 | 11 | naming | `--machine-credential <file>` while every message says "machine certificate" | kept: the file (`machine.json`) holds the certificate and names its key file; nfltr-pipe uses the same flag. Renaming one of two products alone would split them |
 | 12 | code | `machine.go` and `saved_relay.go` are the same file in send and pipe | no surface change (both are `package main`); a later move into the relay SDK changes neither CLI |
 
@@ -40,8 +40,7 @@ format, written in place).
 
 ## Follow-up (not in this repository)
 
-- nfltr: `nfltr cat`'s `--pin-cert` is `config set-relay --cert-sha256`'s
-  and nfltr-send's `--relay-cert-sha256`; one name across nfltr is
-  nfltr's decision (nfltr has no 1.0 freeze yet).
+- Done (lane UXNEXT): one name, `--cert-sha256`, in nfltr, nfltr-send and
+  nfltr-pipe.
 - The 26 MB blob in send's history (finding 1): a history rewrite of a
   public repository is the owner's call.
