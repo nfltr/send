@@ -37,14 +37,16 @@ root; a name that already exists in `--to` refuses the transfer.
 | `--json` | receive | off | end with one JSON line on stderr (below) |
 
 Flags are Go `flag` syntax: `-flag value`, `--flag value`, `--flag=value`.
-receive takes no relay: `--relay`, `--relay-http` or `$NFLTR_SEND_RELAY`
-set is a usage error (exit 1), since the address names its relay.
+receive takes no relay flag: `--relay` or `--relay-http` is a usage error
+(exit 1), since the address names its relay. It ignores
+`$NFLTR_SEND_RELAY`: the address names its relay; the variable applies to
+send only.
 
 ## Environment
 
 | variable | read by | meaning |
 |---|---|---|
-| `$NFLTR_SEND_RELAY` | send, receive | send: `--relay`'s default; receive refuses it set |
+| `$NFLTR_SEND_RELAY` | send | `--relay`'s default; receive ignores it (the address names its relay; the variable applies to send only) |
 | `$NFLTR_RELAY_CERT_SHA256` | send, receive | `--relay-cert-sha256`'s default (the relay SDK's name, shared with nfltr) |
 | `$NFLTR_CONFIG` | send, receive | the nfltr config file (default `~/.config/nfltr/nfltr.json`): its saved relay (`server`, `proxy_url`, `relay_cert_sha256`; nothing of an account), and the directory of `machine.json` |
 

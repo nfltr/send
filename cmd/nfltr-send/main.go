@@ -409,9 +409,6 @@ func receiveCmd(ctx context.Context, args []string) int {
 	if err == nil && fs.NArg() != 0 {
 		err = errors.New("receive: no arguments (the address comes from --address-file)")
 	}
-	if err == nil && os.Getenv("NFLTR_SEND_RELAY") != "" {
-		err = errors.New("receive: $NFLTR_SEND_RELAY is set: the address names its relay; unset it for receive")
-	}
 	if err != nil {
 		return failTo(os.Stderr, *asJSON, 1, err)
 	}

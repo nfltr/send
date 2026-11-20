@@ -139,8 +139,8 @@ The relay is `--relay`, else `$NFLTR_SEND_RELAY`, else the one `nfltr config
 set-relay` saved (with its HTTPS URL and certificate pin; nothing of an
 account is read), else `grpc.nfltr.xyz:443`; an error connecting names the
 relay and `--relay`.
-`receive` (no `--relay`: the address names its relay; `--relay`,
-`--relay-http` or `$NFLTR_SEND_RELAY` set is a usage error):
+`receive` (no `--relay`: the address names its relay; `--relay` or
+`--relay-http` is a usage error, `$NFLTR_SEND_RELAY` is ignored):
 `--to <dir>`, `--address-file <file>` (default stdin), `--direct on|off`,
 `--relay-cert-sha256 <sha256>`,
 `--tries <n>` (default 10, each session resuming the last; after a

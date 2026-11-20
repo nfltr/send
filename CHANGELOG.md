@@ -15,9 +15,10 @@ These change what scripts see; v1.0 keeps them.
 - **A stopped sender exits 130 (SIGINT) or 143 (SIGTERM)**, no longer 0,
   so a script tells it from a `--once` sender whose transfer completed
   (0).
-- **`receive` takes no relay.** `--relay`, `--relay-http` and
-  `$NFLTR_SEND_RELAY` were ignored by receive (the address names its
-  relay); now each is a usage error (exit 1) that says so.
+- **`receive` takes no relay flag.** `--relay` and `--relay-http` were
+  ignored by receive (the address names its relay); now each is a usage
+  error (exit 1) that says so. `$NFLTR_SEND_RELAY` stays send's only:
+  receive ignores it.
 - **`--relay-pin` is now `--relay-cert-sha256`**, the name of its
   variable `$NFLTR_RELAY_CERT_SHA256` and of nfltr's `config set-relay
   --cert-sha256`.

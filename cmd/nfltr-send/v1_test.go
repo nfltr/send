@@ -16,8 +16,9 @@ import (
 	"github.com/nfltr/send/xfer"
 )
 
-// receive refuses a relay (the address names its relay) as a usage
-// error, never ignores it; --direct takes on or off only.
+// receive refuses a relay flag (the address names its relay) as a usage
+// error, never ignores it, and ignores $NFLTR_SEND_RELAY (send's, set in
+// a profile); --direct takes on or off only.
 func TestReceiveRefusesARelayAndDirectIsOnOrOff(t *testing.T) {
 	t.Setenv("NFLTR_SEND_RELAY", "")
 	for name, c := range map[string]struct {
@@ -28,7 +29,7 @@ func TestReceiveRefusesARelayAndDirectIsOnOrOff(t *testing.T) {
 		"--relay":            {"", []string{"--relay", "x:443"}, "takes no --relay"},
 		"--relay=":           {"", []string{"--relay=x:443"}, "takes no --relay"},
 		"--relay-http":       {"", []string{"--relay-http", "x"}, "takes no --relay-http"},
-		"$NFLTR_SEND_RELAY":  {"x:443", nil, "$NFLTR_SEND_RELAY is set"},
+		"$NFLTR_SEND_RELAY":  {"x:443", nil, "open /nonexistent"}, // ignored: on to the address file
 		"--direct true":      {"", []string{"--direct", "true"}, `--direct "true": want on or off`},
 		"--direct (empty)":   {"", []string{"--direct="}, `--direct "": want on or off`},
 		"--relay-pin (gone)": {"", []string{"--relay-pin", "00"}, "not defined: -relay-pin"},
