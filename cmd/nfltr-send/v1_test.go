@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"syscall"
@@ -61,8 +62,9 @@ func TestStoppedSenderExits130Or143(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
 		pr, pw := io.Pipe()
 		code := make(chan int, 1)
+		stderr := os.Stderr // read here, not in the goroutine: stderrOf swaps it (-race)
 		go func() {
-			code <- serve(ctx, nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, false, pw)
+			code <- serve(ctx, nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, false, pw, stderr)
 		}()
 		if _, err := readLine(pr); err != nil { // serving
 			t.Fatal(err)

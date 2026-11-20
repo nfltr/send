@@ -263,14 +263,16 @@ func sendCmd(ctx context.Context, args []string) int {
 		return fail(1, err)
 	}
 	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	return serve(ctx, cfg, mode, m, src, *once, os.Stdout)
+	return serve(ctx, cfg, mode, m, src, *once, os.Stdout, os.Stderr)
 }
 
 // serve serves src under a fresh address until ctx ends (once: until the
-// first complete transfer), writing the address to out. With m nil the
+// first complete transfer), writing the address to out and its messages to
+// errw (a parameter, not os.Stderr: its session goroutines outlive a test
+// that swaps os.Stderr, -race). With m nil the
 // address is served with no account (cfg holds no credential): direct
 // paths only.
-func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *machine, src *xfer.Source, once bool, out io.Writer) int {
+func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *machine, src *xfer.Source, once bool, out, errw io.Writer) int {
 	anon := m == nil
 	if !anon {
 		cfg.ClientCert = m.cert
@@ -284,18 +286,18 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 		l, err = l.WithDirect()
 	}
 	if err != nil {
-		return fail(1, err)
+		return failTo(errw, false, 1, err)
 	}
 	ln, err := nfnet.Listen(ctx, cfg, "send", nfnet.ListenOptions{Address: l, Direct: mode})
 	if err != nil {
 		if code := stopCode(ctx); code != 0 {
 			return code
 		}
-		return fail(codeOr(err, nfnet.CodeUnreachable), relayHint(enrolHint(err, anon), cfg.AgentRelay))
+		return failTo(errw, false, codeOr(err, nfnet.CodeUnreachable), relayHint(enrolHint(err, anon), cfg.AgentRelay))
 	}
 	defer ln.Close() //nolint:errcheck
 	files, bytes := src.Files()
-	fmt.Fprintf(os.Stderr, "serving %d %s, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, filesWord(files), bytes)
+	fmt.Fprintf(errw, "serving %d %s, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, filesWord(files), bytes)
 	fmt.Fprintln(out, ln.Address())
 	// A --once transfer ends the listener itself; done closes once that
 	// Close returned: the process may exit only then. Close resets what is
@@ -321,7 +323,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 			if ctx.Err() != nil {
 				return stopCode(ctx)
 			}
-			return fail(codeOr(err, nfnet.CodeReset), relayHint(enrolHint(err, anon), cfg.AgentRelay))
+			return failTo(errw, false, codeOr(err, nfnet.CodeReset), relayHint(enrolHint(err, anon), cfg.AgentRelay))
 		}
 		sessions.take(c, func(c net.Conn) {
 			defer c.Close() //nolint:errcheck
@@ -336,7 +338,7 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 				slog.Warn("receiver refused", "reason", a.Message)
 			default:
 				slog.Info("transfer done", "files", a.Files, "bytes", a.Bytes, "sent", sent, "seconds", time.Since(t0).Seconds())
-				fmt.Fprintf(os.Stderr, "sent %d %s, %d bytes (%d this session) in %.1f s\n", a.Files, filesWord(a.Files), a.Bytes, sent, time.Since(t0).Seconds())
+				fmt.Fprintf(errw, "sent %d %s, %d bytes (%d this session) in %.1f s\n", a.Files, filesWord(a.Files), a.Bytes, sent, time.Since(t0).Seconds())
 				if once {
 					end.Do(func() {
 						_ = c.Close() // this session's clean end first: the listener's Close resets what is open

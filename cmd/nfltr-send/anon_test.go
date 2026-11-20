@@ -46,8 +46,9 @@ func serveAnon(t *testing.T, r *relaycoretest.Relay, dir string) (string, <-chan
 	}
 	pr, pw := io.Pipe()
 	code := make(chan int, 1)
+	stderr := os.Stderr // read here, not in the goroutine: stderrOf swaps it (-race)
 	go func() {
-		code <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, true, pw)
+		code <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, true, pw, stderr)
 		_ = pw.Close()
 	}()
 	addr, err := bufio.NewReader(pr).ReadString('\n')
@@ -134,14 +135,11 @@ func TestRelayRefusesAnonymousServing(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	stderr := os.Stderr
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = pw
-	code := serve(ctx, nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, true, io.Discard)
-	os.Stderr = stderr
+	code := serve(ctx, nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, true, io.Discard, pw)
 	_ = pw.Close()
 	msg, _ := io.ReadAll(pr)
 	if code != 2 || !strings.Contains(string(msg), "serves no address without an account") {

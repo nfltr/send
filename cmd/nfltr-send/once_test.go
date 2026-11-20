@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 		if err != nil {
 			os.Exit(1)
 		}
-		os.Exit(serve(context.Background(), nfnet.Config{Relay: "relay.test", AgentRelay: relay, Plaintext: true}, nfnet.DirectOn, nil, src, true, os.Stdout))
+		os.Exit(serve(context.Background(), nfnet.Config{Relay: "relay.test", AgentRelay: relay, Plaintext: true}, nfnet.DirectOn, nil, src, true, os.Stdout, os.Stderr))
 	}
 	// No test reads this machine's nfltr config (its saved relay).
 	_ = os.Setenv("NFLTR_CONFIG", filepath.Join(os.TempDir(), "nfltr-send-test-no-config", "nfltr.json"))
@@ -90,8 +90,9 @@ func TestOnceRelayedSenderReadsTheAnswer(t *testing.T) {
 		}
 		pr, pw := io.Pipe()
 		served := make(chan int, 1)
+		stderr := os.Stderr // read here, not in the goroutine: stderrOf swaps it (-race)
 		go func() {
-			served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
+			served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw, stderr)
 			_ = pw.Close()
 		}()
 		addr, err := readLine(pr)
@@ -214,8 +215,9 @@ func onceToldAfterACut(t *testing.T, side string) {
 	}
 	pr, pw := io.Pipe()
 	served := make(chan int, 1)
+	stderr := os.Stderr // read here, not in the goroutine: stderrOf swaps it (-race)
 	go func() {
-		served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: agentRelay, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
+		served <- serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: agentRelay, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw, stderr)
 		_ = pw.Close()
 	}()
 	addr, err := readLine(pr)

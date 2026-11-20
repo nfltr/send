@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -57,8 +58,9 @@ func TestReceiveJSONListsTheRelayedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr, pw := io.Pipe()
+	stderr := os.Stderr // read here, not in the goroutine: stderrOf swaps it (-race)
 	go func() {
-		serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw)
+		serve(t.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true, Token: r.Key}, nfnet.DirectOn, nil, src, true, pw, stderr)
 		_ = pw.Close()
 	}()
 	addr, err := readLine(pr)
