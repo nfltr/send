@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.1.9
+
+- **The machine certificate renews itself after an outage.** A sender
+  that keeps serving renews its certificate at half its lifetime, up to
+  10 % later (before: at two thirds), and while the relay cannot be
+  reached it keeps retrying, also past the certificate's expiry: a relay
+  renews an expired certificate within its grace (90 days), so the sender
+  needs no new `nfltr config login` once its relay answers again. Before,
+  renewal stopped at the expiry. Only a final refusal (the machine
+  revoked, or expired past the grace) stops it, and the sender logs that
+  (relay client v0.23.11).
+- **Built on link v0.13.0, the API link 1.0 keeps.** The wire is
+  unchanged: a v0.1.9 end works with a v0.1.8 end, both ways, relayed and
+  direct (`make cross-version` now checks it against v0.1.8).
+  A relay built on it also ends two joined sessions whose ends cross
+  cleanly; before, both ends could be reset 30 s after reading every byte.
+- **Sessions ride the relay's agent link, or its gRPC streams**: the
+  relay client no longer opens separate data connections to a relay that
+  offers them (relay client v0.23.12).
+- Built on link v0.13.0, relay client v0.23.12, relay proto v0.21.5 and
+  relay-core v0.17.0.
+
 ## v0.1.8
 
 These change what scripts see; v1.0 keeps them.

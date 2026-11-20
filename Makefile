@@ -68,7 +68,7 @@ reliability-soak-relayed:
 # docker. A check workflow job; not in make ci, whose TMPDIR a CI runner's
 # docker cannot mount (there: ci-request TARGET=cross-version). A release
 # moves SEND_PREV to itself.
-SEND_PREV ?= v0.1.7
+SEND_PREV ?= v0.1.8
 export SEND_PREV
 cross-version:
 	sh bench/rel/cross.sh
