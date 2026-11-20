@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.8
 
 These change what scripts see; v1.0 keeps them.
 
@@ -31,6 +31,15 @@ These change what scripts see; v1.0 keeps them.
   a receiver takes any version from 4 to its own and both speak the
   lower, so a later 1.x sender works with an earlier 1.x receiver.
 
+- **A relayed close waits for the other end.** A relayed session's close
+  returned once the relay had the last bytes; it now returns once the
+  other end acknowledged them through the relay, as a direct close does,
+  and gives up when that end stays silent past its bound (link v0.12.20,
+  relay client v0.23.10, relay-core v0.16.9).
+- **A reset before the sender's answer is a reset, not a refused secret.**
+  A receive whose session was reset before the sender answered could exit
+  10 (`e2ee_client_refused`); it now exits 6 (`reset`): only a sender that
+  refused the address's secret is exit 10 (relay client v0.23.10).
 - **The contract of a 1.x release:** [docs/v1-contract.md](docs/v1-contract.md)
   lists the commands, flags, environment variables, exit codes, the
   `--json` keys, the address format, the protocol version and the
@@ -39,6 +48,8 @@ These change what scripts see; v1.0 keeps them.
   and verified, against this checkout, both ways (a sender of one, a
   receiver of the other), relayed and direct, on a private relay; in
   the check workflow.
+- Built on link v0.12.20, relay client v0.23.10, relay proto v0.21.4 and
+  relay-core v0.16.9.
 
 ## v0.1.7
 
