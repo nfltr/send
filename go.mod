@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/nfltr/blake3 v1.5.0
-	github.com/nfltr/relay-core v0.16.10-0.20261120085544-4a8d34e71c9c
-	github.com/nfltr/relay/client v0.23.11-0.20261120085351-c7459de44d3d
+	github.com/nfltr/relay-core v0.16.11-0.20261120102913-0f0d646e6d99
+	github.com/nfltr/relay/client v0.23.12-0.20261120102607-231e0a0b4554
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.49.0
 )
@@ -24,11 +24,11 @@ require (
 	github.com/jackpal/gateway v1.2.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/nfltr/link v0.12.21-0.20261120084445-c8f3a3d7cb8c // indirect
-	github.com/nfltr/link/pathswitch v0.0.0-20261120084520-b6c56542506f // indirect
-	github.com/nfltr/link/peerlink/quiclink v0.5.28-0.20261120084520-b6c56542506f // indirect
+	github.com/nfltr/link v0.12.21-0.20261120095927-516d82114661 // indirect
+	github.com/nfltr/link/pathswitch v0.0.0-20261120100000-a257680370cb // indirect
+	github.com/nfltr/link/peerlink/quiclink v0.5.28-0.20261120100000-a257680370cb // indirect
 	github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261112202211-40e0a2570e52 // indirect
-	github.com/nfltr/relay/proto v0.21.5-0.20261120085254-fd1095423ccd // indirect
+	github.com/nfltr/relay/proto v0.21.5-0.20261120102444-79a671f9717c // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect

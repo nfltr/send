@@ -20,7 +20,7 @@ func TestRequiresOnlyPublicModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	public := []string{"github.com/nfltr/send", "github.com/nfltr/relay/client ", "github.com/nfltr/relay/proto ", "github.com/nfltr/link ",
-		"github.com/nfltr/link/peerlink/quiclink ", "github.com/nfltr/quic-go ", "github.com/nfltr/blake3 ", "github.com/nfltr/relay-core "}
+		"github.com/nfltr/link/peerlink/quiclink ", "github.com/nfltr/link/pathswitch ", "github.com/nfltr/quic-go ", "github.com/nfltr/blake3 ", "github.com/nfltr/relay-core "}
 	for _, l := range strings.Split(string(b), "\n") {
 		f := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "require"))
 		if !strings.HasPrefix(f, "github.com/nfltr/") {
