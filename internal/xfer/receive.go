@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nfltr/send/xfer/verified"
+	"github.com/nfltr/send/internal/xfer/verified"
 )
 
 // StagePrefix starts the name of the directory a transfer is staged in,

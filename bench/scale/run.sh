@@ -12,7 +12,7 @@
 #                       ssh hop that carries the address, a few RTTs)
 #   send/recv cpu (user+sys s), peak RSS (KiB): GNU time of each process
 #   recv.json           the receiver's --json line (bytes, written, seconds,
-#                       first_byte_s, sessions, paths)
+#                       first_byte_seconds, sessions, paths)
 # Env: RELAY RELAY_HTTP RELAY_PIN (the relay), NFLTR_CONFIG (the sender's
 # machine certificate beside it), RECV_DIR (default /data/in, emptied first),
 # SEND_FLAGS RECV_FLAGS (extra flags), RECV_WRAP (a command the receiver

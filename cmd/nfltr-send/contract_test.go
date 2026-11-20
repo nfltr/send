@@ -19,7 +19,7 @@ import (
 
 	"github.com/nfltr/relay/client/nfnet"
 	"github.com/nfltr/relay/client/relaytrust"
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 // docs/v1-contract.md lists exactly what the code has: each command's
@@ -75,7 +75,7 @@ func TestContractDoc(t *testing.T) {
 			t.Errorf("the relay SDK's code %d (%s) is %q in the doc's exit table", n, name, exits[strconv.Itoa(n)])
 		}
 	}
-	for _, sig := range []string{"130", "143"} { // a sender stopped: 128 + SIGINT, SIGTERM
+	for _, sig := range []string{"129", "130", "143"} { // a sender stopped: 128 + SIGHUP, SIGINT, SIGTERM
 		if _, ok := exits[sig]; !ok {
 			t.Errorf("exit %s (a stopped sender) is not in the doc's exit table", sig)
 		}

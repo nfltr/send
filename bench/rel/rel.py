@@ -334,7 +334,7 @@ def run_cell(c, logdir):
         secs = time.time() - t0
         js = r.rjson()
         row.update(rc=rc, seconds=round(secs, 3), paths=js.get("paths"), sessions=js.get("sessions"),
-                   written=js.get("written"), first_byte_s=js.get("first_byte_s"), code=js.get("code"))
+                   written=js.get("written"), first_byte_seconds=js.get("first_byte_seconds"), code=js.get("code"))
         want = c.get("expect", 0)
         bad, diff = judge(to, src, want == 0 and rc == 0)
         if bad:  # corrupt or missing: a byte wrong, missing or extra in what the receiver committed

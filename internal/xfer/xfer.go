@@ -33,7 +33,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/nfltr/send/xfer/verified"
+	"github.com/nfltr/send/internal/xfer/verified"
 )
 
 // Version is the highest protocol version this end speaks; MinVersion the

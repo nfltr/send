@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 // The sender serves at most its cap of sessions at once and refuses the

@@ -1,6 +1,6 @@
 #!/bin/sh
 # traces.sh: the xfer tests under -tags sendtrace write their receivers'
-# steps (xfer/trace_on.go); each trace is checked against its model with
+# steps (internal/xfer/trace_on.go); each trace is checked against its model with
 # TLC (TraceCommit.tla, TraceResume.tla: accepted when a behaviour takes
 # every line), the actions no accepted trace takes are listed (test gaps),
 # and every fixture in spec/traces/ named mutant-* must be rejected
@@ -12,7 +12,7 @@ java=${TLA_JAVA:-java} jar=${TLA_JAR:?set TLA_JAR to tla2tools.jar (1.8.0)}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/t"
-(cd .. && SENDTRACE=$tmp/t go test -tags sendtrace -count=1 ./xfer/) >"$tmp/test.out" 2>&1 || { cat "$tmp/test.out"; exit 1; }
+(cd .. && SENDTRACE=$tmp/t go test -tags sendtrace -count=1 ./internal/xfer/) >"$tmp/test.out" 2>&1 || { cat "$tmp/test.out"; exit 1; }
 
 # check FILE: TLC on FILE with the model its name says; FILE.out.
 check() {

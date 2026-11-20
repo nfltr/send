@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nfltr/send/xfer/verified"
+	"github.com/nfltr/send/internal/xfer/verified"
 )
 
 // frame is one frame's bytes.

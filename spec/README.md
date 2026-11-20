@@ -156,36 +156,36 @@ processes; see "Traces").
 | a session's Close writes every byte written before it, then its end, before its nf1 data connection ends; the relay passes a session's bytes and its end on in order (End.tla `Close`) | github.com/nfltr/relay `client/nfnet` `dropMux` since client v0.23.6 (link `Mux.Drain`: the connection closes with every frame written), `TestNF1CloseKeepsWhatWasWritten`; `cmd/nfltr-send` `TestOnceRelayedSenderReadsTheAnswer` through relay-core |
 | the session delivers the sender's bytes in order, unaltered, or ends (it never delivers other bytes) | TLS 1.3 records: AEAD with a per-record sequence nonce (RFC 8446 section 5.3), end to end inside the nf1 session (github.com/nfltr/relay `client/nf1`) |
 | a session's end can look clean (EOF) at any record boundary | crypto/tls returns io.EOF on a close without close_notify at a record boundary (Go `crypto/tls` conn.go); RFC 8446 section 6.1 truncation |
-| the sender's file may change at any time (`Change`); the offer does not: the manifest carries each file's BLAKE3 root from when it was offered and the receiver verifies against that root only (the tree the session carries is checked against it, never trusted on its own). The sender also ends a session (`ErrChanged`) when the size or mtime changed | `xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `xfer/receive.go` `run`, `verify` |
+| the sender's file may change at any time (`Change`); the offer does not: the manifest carries each file's BLAKE3 root from when it was offered and the receiver verifies against that root only (the tree the session carries is checked against it, never trusted on its own). The sender also ends a session (`ErrChanged`) when the size or mtime changed | `internal/xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `internal/xfer/receive.go` `run`, `verify` |
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
-| BLAKE3 is collision resistant and its tree binds every chunk and its position to the root, so a chunk that verifies at an offset is the offered file's chunk there (the model compares the chunks themselves); the tree's length is the manifest's size | the BLAKE3 paper (2020), section 7 (security); the Bao spec (verified streaming, outboard encoding); `xfer/verified` over `github.com/nfltr/blake3/bao` (lukechampine.com/blake3 with arm64 NEON) |
+| BLAKE3 is collision resistant and its tree binds every chunk and its position to the root, so a chunk that verifies at an offset is the offered file's chunk there (the model compares the chunks themselves); the tree's length is the manifest's size | the BLAKE3 paper (2020), section 7 (security); the Bao spec (verified streaming, outboard encoding); `internal/xfer/verified` over `github.com/nfltr/blake3/bao` (lukechampine.com/blake3 with arm64 NEON) |
 | SHA-256 is collision resistant (the manifest's digest names the stage and the intent record) | FIPS 180-4 |
-| a rename is atomic across a crash; a synced file and its directory entry survive one. The received files are synced before the intent record: one syncfs(2) of the file system (Linux), an fsync(2) per file then the intent's F_FULLFSYNC, which flushes the drive's whole cache (macOS), FlushFileBuffers or fsync per file (elsewhere) | rename(2), fsync(2), syncfs(2), fcntl(2) F_FULLFSYNC; `xfer/sync_*.go` |
-| an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `xfer/lock_*.go` |
-| a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `xfer/rename_*.go` |
+| a rename is atomic across a crash; a synced file and its directory entry survive one. The received files are synced before the intent record: one syncfs(2) of the file system (Linux), an fsync(2) per file then the intent's F_FULLFSYNC, which flushes the drive's whole cache (macOS), FlushFileBuffers or fsync per file (elsewhere) | rename(2), fsync(2), syncfs(2), fcntl(2) F_FULLFSYNC; `internal/xfer/sync_*.go` |
+| an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `internal/xfer/lock_*.go` |
+| a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `internal/xfer/rename_*.go` |
 
 ## Code map
 
 | spec | code |
 |---|---|
-| `Open` (the part verified with its kept tree, the chunks asked for) | `xfer/receive.go` `parts`, `runs`, `keptTree`, `open`; `xfer/xfer.go` `need`, `validRuns`; `xfer/send.go` `sendFile`; `xfer/verified` `Good` |
-| `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `xfer/send.go` `sendFile`; `xfer/receive.go` `run` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `xfer/verified` `Chunk` |
-| `Finish` (every chunk on disk verified, kept on mismatch) | `xfer/receive.go` `verify`, `commit`; `xfer/verified` `Verify` |
-| `Cut`, `Crash` | `xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
-| `Rot` | the disk; `xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
-| `Change` | the sender's disk; `xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
-| `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `xfer/lock_*.go` |
-| `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `xfer/receive.go` `commit`, `taken`, `writeIntent`; `xfer/sync_*.go` (the files synced before it) |
-| `Commit.tla` `Rename`, `Stop`, `Finish` | `xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
-| `Commit.tla` `Expire` (and `Open` by the sweep) | `xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
-| `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
-| `End.tla` `Read` | `xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
-| `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `xfer/trace_on.go` (the recorder), `xfer/trace_off.go`; the call sites in `xfer/receive.go` (behind `traceOn`) |
+| `Open` (the part verified with its kept tree, the chunks asked for) | `internal/xfer/receive.go` `parts`, `runs`, `keptTree`, `open`; `internal/xfer/xfer.go` `need`, `validRuns`; `internal/xfer/send.go` `sendFile`; `internal/xfer/verified` `Good` |
+| `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `internal/xfer/send.go` `sendFile`; `internal/xfer/receive.go` `run` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `internal/xfer/verified` `Chunk` |
+| `Finish` (every chunk on disk verified, kept on mismatch) | `internal/xfer/receive.go` `verify`, `commit`; `internal/xfer/verified` `Verify` |
+| `Cut`, `Crash` | `internal/xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
+| `Rot` | the disk; `internal/xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
+| `Change` | the sender's disk; `internal/xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
+| `Commit.tla` `Open` (the stage's lock, busy; with the intent, the recovery) | `internal/xfer/receive.go` `newReceiver`, `lockStage`, `Receive`; `internal/xfer/lock_*.go` |
+| `Commit.tla` `Begin` (the taken check, the intent with the manifest) | `internal/xfer/receive.go` `commit`, `taken`, `writeIntent`; `internal/xfer/sync_*.go` (the files synced before it) |
+| `Commit.tla` `Rename`, `Stop`, `Finish` | `internal/xfer/receive.go` `commit` (one pass in manifest order: a moved entry compared with the manifest, `placed`; a staged one renamed, `move`; the sync, the stage removed), `internal/xfer/rename_*.go` `renameNoReplace`; `Receive`, `end` and `Answer.keep` (the stage kept) |
+| `Commit.tla` `Expire` (and `Open` by the sweep) | `internal/xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
+| `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `internal/xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `internal/xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
+| `End.tla` `Read` | `internal/xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
+| `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `internal/xfer/trace_on.go` (the recorder), `internal/xfer/trace_off.go`; the call sites in `internal/xfer/receive.go` (behind `traceOn`) |
 
 ## Traces
 
 `make spec-traces` (`spec/traces.sh`) runs the xfer tests with
-`-tags sendtrace`: `xfer/trace_on.go` writes one NDJSON line per model step
+`-tags sendtrace`: `internal/xfer/trace_on.go` writes one NDJSON line per model step
 a receiver takes, per generation of a stage (from its creation to its
 removal), one file for Commit.tla and one per non-empty file for
 Resume.tla. Each is checked with TLC (`TraceCommit.tla`, `TraceResume.tla`,
@@ -197,7 +197,7 @@ tests `TestPartWhoseTailWasLostResumes`,
 `TestStaleStageOfACutTransferIsRemoved` closed Crash, Begin's refusal and
 Expire; `TestUnverifiedChunkIsRefused` and
 `TestSenderRefusesAFileRewrittenWhileSent` take Bad and Change). Without
-the tag the recorder is `xfer/trace_off.go`, every call site behind the
+the tag the recorder is `internal/xfer/trace_off.go`, every call site behind the
 constant `traceOn`: no code in a release binary. 99 traces, about 10 s.
 
 | line (code) | action |

@@ -147,7 +147,7 @@ relay and `--relay`.
 commit whose session was cut before the sender read the answer, the
 remaining sessions tell the sender again, so a `--once` sender ends), `--json` (one
 JSON line on stderr: the totals and `paths`, each path the transfer used;
-on failure instead `exit`, `code` (the exit's name below) and `error`,
+on failure instead `exit`, `code` (the exit's name below) and `message`,
 the exit status unchanged). `nfltr-send <command> -h` lists them all
 (exit 0); `nfltr-send version` prints the release, its commit and the Go
 version.
@@ -157,8 +157,9 @@ Exit codes, the relay SDK's table, the same as nfltr-pipe's: 0 done, 1
 busy, a commit refused), 5 `unreachable`, 6 `reset`, 7
 `e2ee_pin_mismatch`, 9 `balance_exhausted`, 10 `e2ee_client_refused`,
 12 `direct_required` (no direct path and no account to relay); a sender
-stopped by SIGINT exits 130, by SIGTERM 143 (`--once` after its transfer:
-0).
+stopped by SIGHUP exits 129, by SIGINT 130, by SIGTERM 143 (`--once`
+after its transfer: 0). Flags may follow the files; after `--` every word
+is a file.
 
 ## Tested across NATs
 

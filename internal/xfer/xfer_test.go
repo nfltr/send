@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nfltr/send/xfer/verified"
+	"github.com/nfltr/send/internal/xfer/verified"
 )
 
 // tree makes src/data (a directory: a file of n random bytes, a small

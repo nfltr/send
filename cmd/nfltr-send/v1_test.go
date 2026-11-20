@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -14,7 +15,7 @@ import (
 	"time"
 
 	"github.com/nfltr/relay/client/nfnet"
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 // receive refuses a relay flag (the address names its relay) as a usage
@@ -52,9 +53,9 @@ func TestReceiveRefusesARelayAndDirectIsOnOrOff(t *testing.T) {
 
 // A sender stopped by a signal exits 128 + its number, apart from a
 // --once sender whose transfer completed (0).
-func TestStoppedSenderExits130Or143(t *testing.T) {
+func TestStoppedSenderExits128PlusTheSignal(t *testing.T) {
 	r := anonRelay(t, true)
-	for sig, want := range map[syscall.Signal]int{syscall.SIGINT: 130, syscall.SIGTERM: 143} {
+	for sig, want := range map[syscall.Signal]int{syscall.SIGHUP: 129, syscall.SIGINT: 130, syscall.SIGTERM: 143} {
 		src, err := xfer.NewSource([]string{offer(t)})
 		if err != nil {
 			t.Fatal(err)
@@ -84,5 +85,33 @@ func TestStoppedSenderExits130Or143(t *testing.T) {
 func TestVersion(t *testing.T) {
 	if v := versionLine(); !strings.HasPrefix(v, "nfltr-send ") || !strings.HasSuffix(v, " "+runtime.Version()) || len(strings.Fields(v)) != 4 {
 		t.Fatalf("version %q: want nfltr-send <version> <commit> <go version>", v)
+	}
+}
+
+// Flags may follow the arguments, as nfltr's commands take them; after --
+// every word is an argument.
+func TestFlagsAfterTheArguments(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(other, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		args []string
+		say  string
+	}{
+		"flag after a file":  {[]string{offer(t), "--direct", "maybe"}, `--direct "maybe": want on or off`},
+		"flag between files": {[]string{offer(t), "--direct=maybe", other}, `--direct "maybe": want on or off`},
+		"-- ends the flags":  {[]string{offer(t), "--", "--once"}, "--once"},
+	} {
+		var code int
+		msg := stderrOf(t, func() { code = sendCmd(t.Context(), c.args) })
+		if code != 1 || !strings.Contains(msg, c.say) {
+			t.Errorf("%s: exit %d, %q: want 1 saying %q", name, code, msg, c.say)
+		}
+	}
+	var code int
+	msg := stderrOf(t, func() { code = receiveCmd(t.Context(), []string{"x", "--address-file", "/nonexistent"}) })
+	if code != 1 || !strings.Contains(msg, "no arguments") {
+		t.Errorf("receive with an argument: exit %d, %q: want 1 saying no arguments", code, msg)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,7 +34,7 @@ import (
 	"github.com/nfltr/relay/client/nf1"
 	"github.com/nfltr/relay/client/nfnet"
 	"github.com/nfltr/relay/client/relaytrust"
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 const usage = `nfltr-send: send files between two machines, end to end encrypted
@@ -77,7 +78,7 @@ Exit status (the relay SDK's table, shared with nfltr-pipe):
   10 e2ee_client_refused: the sender refused this receive's proof
   12 direct_required: no direct path to a sender serving with no account
      (relaying needs the sender's account)
-  130 send stopped by SIGINT, 143 by SIGTERM
+  129 send stopped by SIGHUP, 130 by SIGINT, 143 by SIGTERM
 
 Flags:
 `
@@ -126,12 +127,13 @@ type stopped struct{ sig syscall.Signal }
 
 func (s stopped) Error() string { return "stopped: " + s.sig.String() }
 
-// stopContext ends at SIGINT or SIGTERM with the signal as its cause; a
-// second signal has its default effect.
+// stopContext ends at SIGINT, SIGTERM or SIGHUP (a closed terminal, ssh
+// ending its session) with the signal as its cause; a second signal has
+// its default effect.
 func stopContext() (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		if s, ok := <-sigc; ok {
 			signal.Stop(sigc)
@@ -142,7 +144,8 @@ func stopContext() (context.Context, func()) {
 }
 
 // stopCode is the exit of a sender a signal stopped (ctx's cause): 128
-// plus the signal's number, 130 for SIGINT, 143 for SIGTERM; 0 for none.
+// plus the signal's number, 129 for SIGHUP, 130 for SIGINT, 143 for
+// SIGTERM; 0 for none.
 func stopCode(ctx context.Context) int {
 	if s, ok := errors.AsType[stopped](context.Cause(ctx)); ok {
 		return 128 + int(s.sig)
@@ -179,7 +182,7 @@ func addCommon(fs *flag.FlagSet, serving bool) common {
 // relay flag receive does not take named as such.
 func parse(fs *flag.FlagSet, args []string) (help bool, err error) {
 	fs.SetOutput(io.Discard)
-	err = fs.Parse(args)
+	err = parseInterspersed(fs, args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
 		fmt.Fprint(os.Stderr, usage)
@@ -195,6 +198,27 @@ func parse(fs *flag.FlagSet, args []string) (help bool, err error) {
 		}
 	}
 	return false, fmt.Errorf("%w (%s -h lists the flags)", err, fs.Name())
+}
+
+// parseInterspersed parses args into fs with flags before, between or
+// after the arguments (as nfltr's commands take them); every word after
+// the first -- is an argument. fs.Args() is the arguments, in order.
+func parseInterspersed(fs *flag.FlagSet, args []string) error {
+	var tail []string
+	if i := slices.Index(args, "--"); i >= 0 {
+		args, tail = args[:i], args[i+1:]
+	}
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		pos, args = append(pos, fs.Arg(0)), fs.Args()[1:]
+	}
+	return fs.Parse(append(append([]string{"--"}, pos...), tail...))
 }
 
 func (c common) config() (nfnet.Config, nfnet.DirectMode, error) {
@@ -403,7 +427,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	addrFile := fs.String("address-file", "-", "read the address from this `file` (mode 0600), or - for stdin")
 	to := fs.String("to", ".", "receive into this `directory`")
 	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last, or after a commit whose session was cut tells the sender again")
-	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_s, sessions, paths (each path used, in order); on failure instead exit, code (the exit status's name) and error")
+	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_seconds, sessions, paths (each path used, in order); on failure instead exit, code (the exit status's name) and message")
 	help, err := parse(fs, args)
 	if help {
 		return 0
@@ -514,7 +538,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 			fmt.Fprintf(w, "received %d %s, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, filesWord(a.Files), a.Bytes, el, float64(a.Bytes)/1e6/el, path)
 			if asJSON {
 				b, _ := json.Marshal(map[string]any{"files": a.Files, "bytes": a.Bytes, "written": written, "seconds": el,
-					"first_byte_s": first.Seconds(), "sessions": try, "paths": paths})
+					"first_byte_seconds": first.Seconds(), "sessions": try, "paths": paths})
 				fmt.Fprintln(w, string(b))
 			}
 			mu.Unlock()
@@ -705,7 +729,7 @@ func failTo(w io.Writer, asJSON bool, code int, err error) int {
 		fmt.Fprintln(w, "nfltr-send:", err)
 		return code
 	}
-	b, _ := json.Marshal(map[string]any{"exit": code, "code": nfnet.Code(code).String(), "error": err.Error()})
+	b, _ := json.Marshal(map[string]any{"exit": code, "code": nfnet.Code(code).String(), "message": err.Error()})
 	fmt.Fprintln(w, string(b))
 	return code
 }

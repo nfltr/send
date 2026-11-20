@@ -55,7 +55,7 @@ In `REL_OUT` (default `$TMPDIR/nfltr-send-rel-<mode>-<time>`):
 - `runs.jsonl` (matrix) or `soak.jsonl`: one line per transfer: cell,
   bytes, fault, exit status, seconds (receiver start to its exit, faults
   included), Mbit/s, the receiver's `--json` fields (`paths`, `sessions`,
-  `written`, `first_byte_s`), ok and the failure reason.
+  `written`, `first_byte_seconds`), ok and the failure reason.
 - `cells.jsonl`: one line per cell: runs, passes, pass rate, median
   seconds and Mbit/s of the passing runs, the paths they took, failures by
   reason.

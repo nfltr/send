@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/nfltr/relay/client/nfnet"
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 // onceChild, set in a child's environment to a relay's agent-link

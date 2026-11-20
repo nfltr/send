@@ -18,7 +18,7 @@ check:
 	GOOS=windows GOARCH=amd64 go vet ./...
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/nfltr-send
 	go test -race ./...
-	go test -run '^$$' -fuzz FuzzReceive -fuzztime 10s ./xfer/
+	go test -run '^$$' -fuzz FuzzReceive -fuzztime 10s ./internal/xfer/
 
 spec:
 	@set -e; t=$$(sh scripts/fetch-tla.sh); \

@@ -36,7 +36,9 @@ root; a name that already exists in `--to` refuses the transfer.
 | `--tries <n>` | receive | 10 | sessions to try before giving up, each resuming the last |
 | `--json` | receive | off | end with one JSON line on stderr (below) |
 
-Flags are Go `flag` syntax: `-flag value`, `--flag value`, `--flag=value`.
+Flags are Go `flag` syntax: `-flag value`, `--flag value`, `--flag=value`,
+before, between or after the arguments (as nfltr's commands take them);
+every word after the first `--` is an argument (a file named `-x`).
 receive takes no relay flag: `--relay` or `--relay-http` is a usage error
 (exit 1), since the address names its relay. It ignores
 `$NFLTR_SEND_RELAY`: the address names its relay; the variable applies to
@@ -75,6 +77,7 @@ nfltr-send's sender adds the shell's exits for a stop:
 
 | exit | code | meaning |
 |---|---|---|
+| 129 | | send stopped by SIGHUP (its terminal closed, ssh ended its session) |
 | 130 | | send stopped by SIGINT |
 | 143 | | send stopped by SIGTERM |
 
@@ -94,14 +97,14 @@ When nfltr-send exits with each:
 - 5: the relay or the sender not reached within the open bound; the
   relay's certificate refused (`--relay-cert-sha256`).
 - 6: receive: the last of `--tries` sessions cut, a protocol error, the
-  receive stopped (SIGINT, SIGTERM; receive the address again to
-  resume); send: the relay ended the address.
+  receive stopped (SIGINT, SIGTERM, SIGHUP; receive the address again
+  to resume); send: the relay ended the address.
 - 7, 10: receive: the sender's key is not the address's; the sender
   refused this receive's proof.
 - 9: either, on a relay that bills.
 - 12: receive: no direct path formed (a session that opened and lost it
   resumes first).
-- 130, 143: send stopped by a signal, before or during a transfer.
+- 129, 130, 143: send stopped by a signal, before or during a transfer.
 
 receive tries another session after 3, 5 and 6 (up to `--tries`); 1, 2,
 4, 7, 9, 10, a protocol error and a refused relay certificate end it at
@@ -117,12 +120,12 @@ One JSON object on its own line, last on stderr.
 | `bytes` | success | bytes of the offer |
 | `written` | success | file bytes this receive wrote, resumes included |
 | `seconds` | success | from the receive's start to the commit |
-| `first_byte_s` | success | from the start to the first file byte |
+| `first_byte_seconds` | success | from the start to the first file byte |
 | `sessions` | success | sessions used |
 | `paths` | success | each path the transfer used, in order (`direct`, `relayed`, the relayed one's reason after a `/`) |
 | `exit` | failure | the exit status |
 | `code` | failure | its name (the table above) |
-| `error` | failure | the message |
+| `message` | failure | why (the key nfltr's `cat` events name it by) |
 
 The values' types are covered; the reason after `relayed/` is not.
 
@@ -175,4 +178,5 @@ darwin and windows on amd64 and arm64, `SHA256SUMS`, and
 - The sender's session limits (16 at once), which path a transfer takes,
   throughput, memory.
 - Builds with `-tags sendtrace` (`$SENDTRACE`), the relay SDK's own
-  diagnostics variables, and the Go packages (`xfer` is not a 1.x API).
+  diagnostics variables. The module has no Go API: its packages are
+  under `internal/`.

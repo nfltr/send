@@ -13,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nfltr/send/xfer/verified"
+	"github.com/nfltr/send/internal/xfer/verified"
 )
 
 // Source is what a sender serves: the manifest of its paths and where each

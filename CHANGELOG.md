@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+From the v1.0 surface review ([docs/v1-surface-review.md](docs/v1-surface-review.md)).
+These change what scripts see; v1.0 keeps them.
+
+- **receive `--json`: `error` is now `message`, `first_byte_s` is now
+  `first_byte_seconds`**, the names nfltr's `cat` events and metrics use.
+  A script reading either key reads the new one.
+- **SIGHUP stops the sender cleanly, exit 129**: its sessions close at
+  once (before, the process died and its receivers waited for the link's
+  liveness). The shell reported 129 for that death before too. A
+  receive stopped by SIGHUP exits 6 and resumes, as at SIGINT.
+- **Flags may follow the files**: `nfltr-send send report.pdf --once`
+  now sends `report.pdf` once (before: a file named `--once`, exit 1).
+  After `--` every word is a file.
+- **The module has no Go API**: `xfer` is now `internal/xfer`. Nothing
+  outside this repository imported it.
+- The built binary `cmd/nfltr-send/nfltr-send` committed in v0.1.8 is
+  removed, and a test keeps binaries out.
+
 ## v0.1.9
 
 - **The machine certificate renews itself after an outage.** A sender

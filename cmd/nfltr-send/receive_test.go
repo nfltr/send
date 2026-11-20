@@ -15,7 +15,7 @@ import (
 
 	"github.com/nfltr/relay-core/relaycoretest"
 	"github.com/nfltr/relay/client/nfnet"
-	"github.com/nfltr/send/xfer"
+	"github.com/nfltr/send/internal/xfer"
 )
 
 // receiveJSON is receiveFrom with --json, returning the exit status and
@@ -94,7 +94,7 @@ func TestReceiveFailureOnceAndJSON(t *testing.T) {
 		t.Fatalf("want one JSON object and nothing else: %q", out)
 	}
 	o := objs[0]
-	msg, _ := o["error"].(string)
+	msg, _ := o["message"].(string)
 	if o["exit"] != float64(12) || o["code"] != "direct_required" || strings.Count(msg, "relaying needs") != 1 || !strings.Contains(msg, "nfltr config login") {
 		t.Fatalf("JSON %v", o)
 	}
