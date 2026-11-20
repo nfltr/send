@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"strings"
@@ -45,6 +46,37 @@ func TestBinaryLinksNoRelayCore(t *testing.T) {
 	for _, p := range strings.Fields(string(out)) {
 		if strings.HasPrefix(p, "github.com/nfltr/relay-core") {
 			t.Errorf("nfltr-send links %s", p)
+		}
+	}
+}
+
+// No built binary is tracked (a go build in cmd/ once committed one):
+// git ls-files' contents start with no ELF, Mach-O or PE magic.
+func TestNoTrackedBinaries(t *testing.T) {
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = "../.."
+	for _, e := range os.Environ() { // the checkout's own git, not an outer one's
+		if !strings.HasPrefix(e, "GIT_") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("not a git checkout (a module download): %v", err)
+	}
+	magic := [][]byte{{0x7f, 'E', 'L', 'F'}, {0xcf, 0xfa, 0xed, 0xfe}, {0xce, 0xfa, 0xed, 0xfe}, {0xca, 0xfe, 0xba, 0xbe}, []byte("MZ")}
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		f, err := os.Open("../../" + name)
+		if err != nil {
+			continue // deleted in the working tree
+		}
+		head := make([]byte, 4)
+		n, _ := f.Read(head)
+		_ = f.Close()
+		for _, m := range magic {
+			if bytes.HasPrefix(head[:n], m) {
+				t.Errorf("%s is a binary: git rm --cached it (.gitignore keeps built ones out)", name)
+			}
 		}
 	}
 }

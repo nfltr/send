@@ -2,3 +2,4 @@
 spec/*_TTrace_*
 spec/states/
 /dist/
+/cmd/nfltr-send/nfltr-send
