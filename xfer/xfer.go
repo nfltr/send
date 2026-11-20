@@ -7,7 +7,7 @@
 //
 //  1. sender: manifest (the entries: paths, sizes, modes, mtimes, and each
 //     file's BLAKE3 root, taken when it was offered);
-//  2. receiver: want (per file it holds a part of: the runs of the
+//  2. receiver: want (the protocol version both speak, Version; per file it holds a part of: the runs of the
 //     part's chunks that verify against the root);
 //  3. sender, per file in manifest order: start (whether it keeps the
 //     want's runs), tree (the file's Bao outboard, package verified),
@@ -36,8 +36,17 @@ import (
 	"github.com/nfltr/send/xfer/verified"
 )
 
-// Version is the protocol's, in the manifest.
-const Version = 4
+// Version is the highest protocol version this end speaks; MinVersion the
+// one every 1.x end speaks. The manifest names the sender's highest, the
+// receiver's want the version both then speak: the lower of the two (a
+// want naming none: MinVersion). The manifest frame itself is MinVersion's
+// in every 1.x release. A value choice on the existing first two frames,
+// no new state: no TLA+ model (spec/README.md models the resume and the
+// commit).
+const (
+	Version    = 4
+	MinVersion = 4
+)
 
 // Frame types.
 const (
@@ -84,7 +93,8 @@ type Part struct {
 }
 
 type want struct {
-	Parts []Part `json:"parts"`
+	Version int    `json:"version,omitempty"` // the version both speak; 0: MinVersion
+	Parts   []Part `json:"parts"`
 }
 
 type start struct {

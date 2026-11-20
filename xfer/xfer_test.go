@@ -1057,3 +1057,64 @@ func TestCommitStandsWhenTheAnswerDoesNotGo(t *testing.T) {
 		t.Fatal("what landed differs from the source")
 	}
 }
+
+// Version negotiation: a sender names its highest version in the
+// manifest, the receiver answers the lower of the two in its want (none:
+// MinVersion) and refuses one below MinVersion; a sender refuses a want
+// naming a version it does not speak.
+func TestVersionNegotiation(t *testing.T) {
+	src := tree(t, 1<<10)
+	t.Run("newer sender", func(t *testing.T) {
+		s, err := NewSource([]string{src})
+		must(t, err)
+		s.Manifest.Version = Version + 1 // a later 1.x sender
+		sr, rr := session(t, s, t.TempDir(), 0)
+		if sr.err != nil || rr.err != nil || !sr.a.OK || !rr.a.OK {
+			t.Fatalf("sender %+v, receiver %+v: want the receiver's version spoken", sr, rr)
+		}
+	})
+	t.Run("older than MinVersion", func(t *testing.T) {
+		s, err := NewSource([]string{src})
+		must(t, err)
+		s.Manifest.Version = MinVersion - 1
+		sr, rr := session(t, s, t.TempDir(), 0)
+		if !errors.Is(rr.err, ErrRefused) || sr.a.OK || !strings.Contains(sr.a.Message, "version") {
+			t.Fatalf("sender %+v, receiver %+v: want refused", sr, rr)
+		}
+	})
+	for name, w := range map[string]struct {
+		want string
+		ok   bool
+	}{
+		"want names the sender's": {`{"version":4}`, true},
+		"want names none":         {`{}`, true},
+		"want names a newer":      {`{"version":5}`, false},
+		"want names an older":     {`{"version":3}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := NewSource([]string{src})
+			must(t, err)
+			a, b := net.Pipe()
+			defer a.Close() //nolint:errcheck
+			go func() {
+				c := newConn(b)
+				_, _, _ = c.read(nil) // the manifest
+				_ = c.write(frameWant, []byte(w.want))
+				_ = c.flush()
+				for {
+					if t, _, err := c.read(nil); err != nil || t == frameDone {
+						break
+					}
+				}
+				_ = c.writeJSON(frameAnswer, Answer{OK: true})
+				_ = c.flush()
+			}()
+			_ = a.SetDeadline(time.Now().Add(5 * time.Second))
+			_, sent, err := s.Serve(a)
+			_ = b.Close()
+			if (err == nil) != w.ok || (w.ok && sent == 0) || (!w.ok && !errors.Is(err, ErrProtocol)) {
+				t.Fatalf("Serve: sent %d, err %v; want ok %v", sent, err, w.ok)
+			}
+		})
+	}
+}

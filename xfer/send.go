@@ -126,6 +126,12 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 	if err := json.Unmarshal(p, &w); err != nil {
 		return a, 0, fmt.Errorf("%w: want: %v", ErrProtocol, err)
 	}
+	if w.Version == 0 {
+		w.Version = MinVersion
+	}
+	if w.Version < MinVersion || w.Version > s.Manifest.Version {
+		return a, 0, fmt.Errorf("%w: want: version %d, this sender speaks %d to %d", ErrProtocol, w.Version, MinVersion, s.Manifest.Version)
+	}
 	parts := map[int]Part{}
 	for _, p := range w.Parts {
 		parts[p.Index] = p

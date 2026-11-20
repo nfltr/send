@@ -89,7 +89,7 @@ func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
 	if err != nil {
 		return Answer{}, err
 	}
-	if err := c.writeJSON(frameWant, want{Parts: parts}); err != nil {
+	if err := c.writeJSON(frameWant, want{Version: min(m.Version, Version), Parts: parts}); err != nil {
 		return Answer{}, err
 	}
 	if err := c.flush(); err != nil {
@@ -229,8 +229,8 @@ func newReceiver(dir string, m Manifest, raw []byte) (*receiver, error) {
 // checkManifest checks m (relative names inside the directory, files and
 // directories only, no name twice) and returns its top-level names.
 func checkManifest(m Manifest) (tops []string, err error) {
-	if m.Version != Version {
-		return nil, fmt.Errorf("protocol version %d, this nfltr-send speaks %d: update both ends", m.Version, Version)
+	if m.Version < MinVersion {
+		return nil, fmt.Errorf("protocol version %d, this nfltr-send speaks %d to %d: update the sender", m.Version, MinVersion, Version)
 	}
 	seen := map[string]bool{}
 	for _, e := range m.Entries {
