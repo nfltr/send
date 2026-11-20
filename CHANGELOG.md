@@ -9,7 +9,7 @@
 - **`make cross-version`:** the previous release, downloaded from GitHub
   and verified, against this checkout, both ways (a sender of one, a
   receiver of the other), relayed and direct, on a private relay; in
-  `make ci` and the check workflow.
+  the check workflow.
 
 ## v0.1.7
 

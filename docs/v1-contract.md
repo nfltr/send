@@ -95,7 +95,8 @@ small files, resume a transfer cut at either end, and end with the exit
 codes above, relayed and direct, and with a sender with no account. The
 transfer protocol is version 4 (`xfer.Version`, in the manifest) for all
 of 1.x: a receiver refuses another version. `make cross-version`
-(`bench/rel/cross.sh`, in `make ci` and the check workflow) runs the
+(`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
+`make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
 signature and sum verified) against this checkout both ways on a private
 relay. Both ends need a relay that serves nf1 addresses (nfltr-relay

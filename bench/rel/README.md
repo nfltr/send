@@ -85,7 +85,8 @@ transfer passed.
 
 ## Cross-version
 
-`make cross-version` (`cross.sh`, in `make ci` and the check workflow)
+`make cross-version` (`cross.sh`, a check workflow job; on the nfltr CI
+runners `make ci-request REPO=send REF=<sha> TARGET=cross-version`)
 runs the previous release, `SEND_PREV` in the Makefile (downloaded from its
 GitHub release by `fetch.sh`, `SHA256SUMS.sshsig` verified against
 `release/allowed_signers` and the binary against `SHA256SUMS`), against

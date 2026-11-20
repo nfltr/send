@@ -8,8 +8,9 @@
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
 .PHONY: ci check spec spec-traces release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
-# make ci: the check workflow's Linux jobs, for a CI runner of our own.
-ci: check spec spec-traces release-dryrun cross-version
+# make ci: the check workflow's Linux jobs but cross-version, for a CI runner
+# of our own.
+ci: check spec spec-traces release-dryrun
 
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -64,7 +65,9 @@ reliability-soak-relayed:
 # GitHub release, signature and sums verified) against nfltr-send built
 # from this checkout, both ways, relayed and direct, on a private relay
 # (bench/rel/cross.sh; docs/v1-contract.md "Compatibility"); Linux with
-# docker. A release moves SEND_PREV to itself.
+# docker. A check workflow job; not in make ci, whose TMPDIR a CI runner's
+# docker cannot mount (there: ci-request TARGET=cross-version). A release
+# moves SEND_PREV to itself.
 SEND_PREV ?= v0.1.7
 export SEND_PREV
 cross-version:
