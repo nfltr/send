@@ -237,7 +237,7 @@ tests `TestPartWhoseTailWasLostResumes`,
 Expire; `TestUnverifiedChunkIsRefused` and
 `TestSenderRefusesAFileRewrittenWhileSent` take Bad and Change). Without
 the tag the recorder is `internal/xfer/trace_off.go`, every call site behind the
-constant `traceOn`: no code in a release binary. 99 traces, about 10 s.
+constant `traceOn`: no code in a release binary. 111 traces, about 10 s.
 
 | line (code) | action |
 |---|---|
