@@ -21,12 +21,13 @@ import (
 
 	"github.com/nfltr/relay/client/machinecert"
 	"github.com/nfltr/relay/client/nfnet"
+	"github.com/nfltr/relay/client/relaytrust"
 )
 
 // expiredMachine is a machine whose certificate expired a day ago (it is
 // machine was off), its relay's reissue route answering status (200: a
 // new certificate). It returns the machine and the renewals asked.
-func expiredMachine(t *testing.T, status *atomic.Int32) (*machine, *atomic.Int32) {
+func expiredMachine(t *testing.T, status *atomic.Int32, serve func(http.Handler) *httptest.Server) (*machine, *atomic.Int32) {
 	t.Helper()
 	skipKeyFileOnWindows(t)
 	key, err := machinecert.NewKey()
@@ -42,7 +43,7 @@ func expiredMachine(t *testing.T, status *atomic.Int32) (*machine, *atomic.Int32
 		return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	}
 	var renewals atomic.Int32
-	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relay := serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		renewals.Add(1)
 		if s := int(status.Load()); s != http.StatusOK {
 			http.Error(w, "no", s)
@@ -80,7 +81,7 @@ func expiredMachine(t *testing.T, status *atomic.Int32) (*machine, *atomic.Int32
 func TestExpiredCertificateRenewsBeforeTheFirstConnection(t *testing.T) {
 	var status atomic.Int32
 	status.Store(http.StatusOK)
-	m, renewals := expiredMachine(t, &status)
+	m, renewals := expiredMachine(t, &status, httptest.NewServer)
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
@@ -102,7 +103,7 @@ func TestExpiredCertificateRenewsBeforeTheFirstConnection(t *testing.T) {
 func TestExpiredCertificateWhileTheRelayRefusesOrIsDown(t *testing.T) {
 	var status atomic.Int32
 	status.Store(http.StatusServiceUnavailable)
-	m, _ := expiredMachine(t, &status)
+	m, _ := expiredMachine(t, &status, httptest.NewServer)
 	if _, err := m.cert(); err == nil {
 		t.Fatal("the relay is down: the expired certificate was presented")
 	}
@@ -122,5 +123,19 @@ func TestRefusedMachineIsNotAnotherRelay(t *testing.T) {
 	}
 	if got := relayHint(&nfnet.Error{Code: nfnet.CodeUnreachable, Message: "timeout"}, "relay.example:443").Error(); !strings.Contains(got, "--relay names another") {
 		t.Errorf("an unreachable relay lost its hint: %q", got)
+	}
+}
+
+// The renewal trusts the relay's pinned certificate ($NFLTR_RELAY_CERT_SHA256)
+// as the sessions do: a relay of one's own with a self-signed certificate
+// (lane CERTGAPS: Go's default transport refused it).
+func TestExpiredCertificateRenewsAtThePinnedRelay(t *testing.T) {
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+	var relay *httptest.Server
+	m, _ := expiredMachine(t, &status, func(h http.Handler) *httptest.Server { relay = httptest.NewTLSServer(h); return relay })
+	t.Setenv(relaytrust.PinEnv, relaytrust.Fingerprint(relay.Certificate().Raw))
+	if c, err := m.cert(); err != nil || !time.Now().Before(c.Leaf.NotAfter) {
+		t.Fatalf("renewal at the pinned relay: %v", err)
 	}
 }
