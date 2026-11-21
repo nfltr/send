@@ -13,20 +13,27 @@ const traceOn = false
 
 type recvTrace struct{}
 
-func traceAtomic() func()                   { return nil }
-func traceExpire(*os.Root, string)          {}
-func (r *receiver) trAtomic() func()        { return nil }
-func (r *receiver) trOpen(bool, string)     {}
-func (r *receiver) trSwept()                {}
-func (r *receiver) trStart(int, [][2]int64) {}
-func (r *receiver) trData([]byte, int64)    {}
-func (r *receiver) trBad([]byte, int64)     {}
-func (r *receiver) trVerified(bool)         {}
-func (r *receiver) trCut()                  {}
-func (r *receiver) trRechecked(int)         {}
-func (r *receiver) trCutPending()           {}
-func (r *receiver) trBegin(bool)            {}
-func (r *receiver) trRename(int, error)     {}
-func (r *receiver) trPend(string, int)      {}
-func (r *receiver) trCommit(string, int)    {}
-func (r *receiver) trEnd()                  {}
+func traceAtomic() func()                          { return nil }
+func traceExpire(*os.Root, string)                 {}
+func (r *receiver) trAtomic() func()               { return nil }
+func (r *receiver) trOpen(bool, string)            {}
+func (r *receiver) trSwept()                       {}
+func (r *receiver) trStart(*sess, int, [][2]int64) {}
+func (r *receiver) trData(*sess, []byte, int64)    {}
+func (r *receiver) trBad(*sess, []byte, int64)     {}
+func (r *receiver) trVerified(int, bool)           {}
+func (r *receiver) trCut(*sess)                    {}
+func (r *receiver) trSession(*sess, bool)          {}
+func (r *receiver) trPool([]piece, int)            {}
+func (r *receiver) trSet(*sess)                    {}
+func (r *receiver) trDone(*sess, error)            {}
+
+type sessTrace struct{}
+
+func (r *receiver) trRechecked(int)      {}
+func (r *receiver) trCutPending()        {}
+func (r *receiver) trBegin(bool)         {}
+func (r *receiver) trRename(int, error)  {}
+func (r *receiver) trPend(string, int)   {}
+func (r *receiver) trCommit(string, int) {}
+func (r *receiver) trEnd()               {}

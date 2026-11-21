@@ -130,7 +130,12 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 		w.Version = MinVersion
 	}
 	if w.Version < MinVersion || w.Version > s.Manifest.Version {
-		return a, 0, fmt.Errorf("%w: want: version %d, this sender speaks %d to %d", ErrProtocol, w.Version, MinVersion, s.Manifest.Version)
+		// told, not only closed: an older receiver ends at once on the
+		// frame it does not expect, a protocol error (no retries)
+		err := fmt.Errorf("%w: want: version %d, this sender speaks %d to %d", ErrProtocol, w.Version, MinVersion, s.Manifest.Version)
+		_ = c.writeJSON(frameAnswer, Answer{Message: err.Error()})
+		_ = c.flush()
+		return a, 0, err
 	}
 	parts := map[int]Part{}
 	for _, p := range w.Parts {

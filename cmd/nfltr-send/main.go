@@ -359,6 +359,8 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 				slog.Warn("transfer ended: no direct path to the receiver; relaying it needs this machine's account (`nfltr config login`)", "sent", sent, "err", err)
 			case err != nil:
 				slog.Warn("transfer ended", "sent", sent, "err", err)
+			case a.Part:
+				slog.Info("part of the transfer in (another session gets the final answer)", "sent", sent, "seconds", time.Since(t0).Seconds())
 			case !a.OK:
 				slog.Warn("receiver refused", "reason", a.Message)
 			default:
@@ -428,6 +430,7 @@ func receiveCmd(ctx context.Context, args []string) int {
 	addrFile := fs.String("address-file", "-", "read the address from this `file` (mode 0600), or - for stdin")
 	to := fs.String("to", ".", "receive into this `directory`")
 	tries := fs.Int("tries", 10, "sessions to try before giving up; each resumes the last, or after a commit whose session was cut tells the sender again")
+	conns := fs.Int("connections", 4, "sessions of the transfer at once, each on a connection of its own (a core at each end); 1: one")
 	asJSON := fs.Bool("json", false, "end with one JSON line on stderr: files, bytes, written (file bytes this receive wrote, resumes included), seconds, first_byte_seconds, sessions, paths (each path used, in order); on failure instead exit, code (the exit status's name) and message")
 	help, err := parse(fs, args)
 	if help {
@@ -435,6 +438,9 @@ func receiveCmd(ctx context.Context, args []string) int {
 	}
 	if err == nil && fs.NArg() != 0 {
 		err = errors.New("receive: no arguments (the address comes from --address-file)")
+	}
+	if err == nil && (*conns < 1 || *conns > maxSessions) {
+		err = fmt.Errorf("--connections %d: want 1 to %d", *conns, maxSessions)
 	}
 	if err != nil {
 		return failTo(os.Stderr, *asJSON, 1, err)
@@ -453,11 +459,11 @@ func receiveCmd(ctx context.Context, args []string) int {
 		return fail(1, fmt.Errorf("--address-file: want an nf1... address (%v)", err))
 	}
 	cfg.Relay = t.Address.Relay // --cert-sha256 verifies the address's relay
-	return receiveTo(ctx, os.Stderr, cfg, t, mode, *to, *tries, *asJSON)
+	return receiveTo(ctx, os.Stderr, cfg, t, mode, *to, *tries, *conns, *asJSON)
 }
 
 // receiveTo receives the offer at t into dir, resuming up to tries sessions.
-func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries int, asJSON bool) (code int) {
+func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Target, mode nfnet.DirectMode, dir string, tries, conns int, asJSON bool) (code int) {
 	var mu sync.Mutex
 	var path string
 	var paths []string
@@ -482,7 +488,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 		}
 	}
 	fail := func(code int, err error) int { return failTo(w, asJSON, code, err) }
-	d, err := nfnet.NewDialer(cfg)
+	d, err := newDialers(cfg)
 	if err != nil {
 		return fail(1, err)
 	}
@@ -516,7 +522,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 		var a xfer.Answer
 		var err error
 		if told == nil {
-			a, err = receiveOnce(ctx, d, t, mode, dir, progress, onPath)
+			a, err = receiveOnce(ctx, d, t, mode, dir, conns, progress, onPath)
 			if errors.As(err, new(unconfirmed)) {
 				told = &a
 			}
@@ -612,40 +618,114 @@ func openBound(mode nfnet.DirectMode) time.Duration {
 	return 60 * time.Second
 }
 
-func receiveOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, dir string, progress xfer.Progress, onPath func(path, reason string)) (xfer.Answer, error) {
-	open, cancel := context.WithTimeout(ctx, openBound(mode))
-	c, err := d.DialTarget(open, t, nfnet.DialOptions{Direct: mode})
-	cancel()
+func receiveOnce(ctx context.Context, ds *dialers, t nfnet.Target, mode nfnet.DirectMode, dir string, conns int, progress xfer.Progress, onPath func(path, reason string)) (xfer.Answer, error) {
+	open := func(ctx context.Context) (xfer.Session, error) {
+		d, release := ds.take()
+		bound, cancel := context.WithTimeout(ctx, openBound(mode))
+		c, err := d.DialTarget(bound, t, nfnet.DialOptions{Direct: mode})
+		cancel()
+		if err != nil {
+			release()
+			return nil, err
+		}
+		return &session{Conn: c, release: release}, nil
+	}
+	first, err := open(ctx)
 	if err != nil {
 		return xfer.Answer{}, openError{err}
 	}
-	onPath(c.Info().Path, "")
-	stop := context.AfterFunc(ctx, func() { _ = c.Reset() })
+	onPath(first.(*session).Info().Path, "")
+	stop := context.AfterFunc(ctx, func() { _ = first.Reset() })
 	defer stop()
-	a, err := receive(c, dir, progress)
-	if err == nil && a.OK {
-		if eerr := senderEnd(c); eerr != nil {
-			err = unconfirmed{eerr} // receiveTo tells the sender again
-		}
+	a, err := receive(ctx, first, xfer.Receiving{Dir: dir, K: conns, Open: open, Progress: progress,
+		End: func(s xfer.Session) error { return senderEnd(s) }})
+	if errors.Is(err, xfer.ErrUnconfirmed) {
+		err = unconfirmed{err} // receiveTo tells the sender again
 	}
-	_ = c.Close()
 	return a, err
 }
+
+// dialers are the receive's Dialers, one per session at once: each its
+// own direct connection (its socket, its punch), so each session's
+// packets are a core's at both ends (nfltr
+// docs/decisions/send-line-rate-2026-11-21.md "Step 3"). ponytail: a
+// socket and a punch per session; quiclink's connections per peer on one
+// socket replace them once the direct path's tokens bind per connection.
+type dialers struct {
+	cfg  nfnet.Config
+	mu   sync.Mutex
+	all  []*nfnet.Dialer
+	free []*nfnet.Dialer
+}
+
+// take is a Dialer no open session uses, and its release.
+func (ds *dialers) take() (*nfnet.Dialer, func()) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	var d *nfnet.Dialer
+	if n := len(ds.free); n > 0 {
+		d, ds.free = ds.free[n-1], ds.free[:n-1]
+	} else {
+		cfg := ds.cfg
+		if len(ds.all) > 0 {
+			cfg.Events = nil // the paths reported are the first session's
+		}
+		d, _ = nfnet.NewDialer(cfg) // checked by the first (newDialers)
+		ds.all = append(ds.all, d)
+	}
+	var once sync.Once
+	return d, func() {
+		once.Do(func() {
+			ds.mu.Lock()
+			ds.free = append(ds.free, d)
+			ds.mu.Unlock()
+		})
+	}
+}
+
+func newDialers(cfg nfnet.Config) (*dialers, error) {
+	d, err := nfnet.NewDialer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &dialers{cfg: cfg, all: []*nfnet.Dialer{d}, free: []*nfnet.Dialer{d}}, nil
+}
+
+func (ds *dialers) Close() error {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	var err error
+	for _, d := range ds.all {
+		err = errors.Join(err, d.Close())
+	}
+	return err
+}
+
+// session is a receive's session: its Dialer free again once it ended.
+type session struct {
+	*nfnet.Conn
+	release func()
+}
+
+func (s *session) Close() error { defer s.release(); return s.Conn.Close() }
+func (s *session) Reset() error { defer s.release(); return s.Conn.Reset() }
 
 // senderEnd waits for the sender's clean end of the session, its word that
 // it read the answer (it ends a session cleanly once Serve returned; spec
 // End.tla Exit). The receiver's own close is no such word: it returns once
 // the relay has the bytes, and the relay can still reset the sender's
 // session under the answer (mutant close-confirms).
-func senderEnd(c *nfnet.Conn) error {
+func senderEnd(c io.Reader) error {
 	_, err := io.Copy(io.Discard, c)
 	return err
 }
 
 // retellOnce dials t again and answers its manifest with a, the answer
 // of the commit whose session was cut (xfer.Retell).
-func retellOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet.DirectMode, a xfer.Answer) error {
+func retellOnce(ctx context.Context, ds *dialers, t nfnet.Target, mode nfnet.DirectMode, a xfer.Answer) error {
 	open, cancel := context.WithTimeout(ctx, openBound(mode))
+	d, release := ds.take()
+	defer release()
 	c, err := d.DialTarget(open, t, nfnet.DialOptions{Direct: mode})
 	cancel()
 	if err != nil {
@@ -661,8 +741,8 @@ func retellOnce(ctx context.Context, d *nfnet.Dialer, t nfnet.Target, mode nfnet
 	return err
 }
 
-// receive is xfer.Receive (a test cuts the session under its answer).
-var receive = xfer.Receive
+// receive is xfer.ReceiveFrom (a test cuts the session under its answer).
+var receive = xfer.ReceiveFrom
 
 func readAddress(name string) (string, error) {
 	var b []byte

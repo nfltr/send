@@ -29,17 +29,20 @@ spec-traces:
 	TLA_JAVA=$$(echo "$$t" | sed -n 1p) TLA_JAR=$$(echo "$$t" | sed -n 2p) sh spec/traces.sh
 
 # make bench-line: BenchmarkDirectCPU on loopback, no netem (2 GiB, 6 runs):
-# one direct connection's ceiling on this machine, both ends in one process,
+# the direct path's ceiling at each BENCH_K on this machine, both ends in one process,
 # CPU s per GiB and Mbit/s; the benchmark text and a CPU profile (with the
 # test binary, for pprof) in BENCH_OUT (default $TMPDIR/bench-line: a box
 # TARGET run's out). The local gate of lane SPEED's steps (nfltr
 # docs/decisions/send-line-rate-2026-11-21.md): old and new interleaved.
 BENCH_OUT ?= $${TMPDIR:-/tmp}/bench-line
+# BENCH_K: the receive's --connections, one sub-benchmark (k=<n>) each,
+# interleaved within every run.
+BENCH_K ?= 1,2,4
 bench-line:
 	mkdir -p $(BENCH_OUT)
 	go test -c -o $(BENCH_OUT)/send.test ./cmd/nfltr-send
 	cd $(BENCH_OUT) && ./send.test -test.run '^$$' -test.bench BenchmarkDirectCPU -test.benchtime 1x -test.count 6 \
-		-test.cpuprofile cpu.prof -transfer-mb 2048 >bench.txt; s=$$?; cat bench.txt; exit $$s
+		-test.cpuprofile cpu.prof -transfer-mb 2048 -bench-k $(BENCH_K) >bench.txt; s=$$?; cat bench.txt; exit $$s
 
 # Release files in dist/ (scripts/release.sh): make release builds the six
 # binaries and SHA256SUMS, reproducibly; make release-sign SIGNING_KEY=<key>

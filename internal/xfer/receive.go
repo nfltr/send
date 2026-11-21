@@ -4,6 +4,7 @@
 package xfer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nfltr/send/internal/xfer/verified"
@@ -45,62 +47,61 @@ var ErrUnverified = errors.New("not the offered bytes")
 // Progress gets the file bytes written so far; nil: none.
 type Progress func(written int64)
 
-// Receive takes one transfer over a session into dir. It returns the
-// answer it sent; an error before the answer (a cut session) leaves the
-// stage for the next Receive of the same offer to resume from. A
-// committed transfer returns no error, whether or not its answer reached
-// the sender.
+// Receive takes one transfer over one session into dir (ReceiveFrom with
+// no further session). It returns the answer it sent; an error before the
+// answer (a cut session) leaves the stage for the next Receive of the
+// same offer to resume from. A committed transfer returns no error,
+// whether or not its answer reached the sender.
 func Receive(rw io.ReadWriter, dir string, progress Progress) (Answer, error) {
-	c := newConn(rw)
+	return ReceiveFrom(context.Background(), one{rw}, Receiving{Dir: dir, Progress: progress})
+}
+
+// one is a lone session: its Close and Reset close rw when it can be.
+type one struct{ io.ReadWriter }
+
+func (o one) Close() error {
+	if c, ok := o.ReadWriter.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
+func (o one) Reset() error { return o.Close() }
+
+// manifest reads a session's first frame: the offer, or the sender's
+// refusal (ErrRefused). A sender of an older protocol is refused, told.
+func manifest(c *conn) (m Manifest, raw []byte, err error) {
 	t, raw, err := c.read(nil)
 	if err != nil {
-		return Answer{}, noEOF(err)
+		return m, nil, noEOF(err)
 	}
 	if t == frameAnswer { // the sender refused the session (Refuse)
 		var a Answer
 		if err := json.Unmarshal(raw, &a); err != nil {
-			return Answer{}, fmt.Errorf("%w: answer: %v", ErrProtocol, err)
+			return m, nil, fmt.Errorf("%w: answer: %v", ErrProtocol, err)
 		}
-		return a, fmt.Errorf("%w: %s", ErrRefused, a.Message)
+		return m, nil, refused{a}
 	}
 	if t != frameManifest {
-		return Answer{}, fmt.Errorf("%w: frame %q, want the manifest", ErrProtocol, t)
+		return m, nil, fmt.Errorf("%w: frame %q, want the manifest", ErrProtocol, t)
 	}
-	var m Manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return Answer{}, fmt.Errorf("%w: manifest: %v", ErrProtocol, err)
+		return m, nil, fmt.Errorf("%w: manifest: %v", ErrProtocol, err)
 	}
-	r, err := newReceiver(dir, m, raw)
-	if err != nil {
-		a := Answer{Message: err.Error()}
-		_ = c.writeJSON(frameAnswer, a)
+	if m.Version < MinVersion {
+		msg := fmt.Sprintf("the sender speaks protocol version %d, this receiver %d to %d: update the older end", m.Version, MinVersion, Version)
+		_ = c.writeJSON(frameAnswer, Answer{Message: msg})
 		_ = c.flush()
-		return a, fmt.Errorf("%w: %w", ErrRefused, err)
+		return m, nil, refused{Answer{Message: msg}}
 	}
-	defer r.close()
-	if r.finishing { // a commit stopped part way: finish it, nothing is sent
-		a := Answer{Files: countFiles(m), Bytes: countBytes(m), OK: true}
-		if err := r.commit(); err != nil {
-			a = Answer{Message: err.Error()}
-		}
-		return answer(c, a)
-	}
-	parts, err := r.parts()
-	if err != nil {
-		return Answer{}, err
-	}
-	if err := c.writeJSON(frameWant, want{Version: min(m.Version, Version), Parts: parts}); err != nil {
-		return Answer{}, err
-	}
-	if err := c.flush(); err != nil {
-		return Answer{}, err
-	}
-	a, err := r.run(c, parts, progress)
-	if err != nil {
-		return a, err
-	}
-	return answer(c, a)
+	return m, raw, nil
 }
+
+// refused is a sender's refusal, its answer.
+type refused struct{ a Answer }
+
+func (e refused) Error() string { return ErrRefused.Error() + ": " + e.a.Message }
+func (e refused) Unwrap() error { return ErrRefused }
 
 // answer sends a to the sender. A commit stands when its answer does not
 // go (the session cut first): the receive is done, nil (spec End.tla Fail,
@@ -149,6 +150,11 @@ type receiver struct {
 	finishing bool          // the stage holds this offer's intent: its commit stopped part way
 	seen      map[int]int64 // file entry -> its staged file's mtime when verified (recheck)
 	tr        recvTrace
+
+	mu       sync.Mutex     // the sessions': trees, progress, the trace
+	trees    map[int][]byte // entry -> its tree, once a session read it whole
+	written  int64          // file bytes written by this receive
+	progress Progress
 }
 
 // intentName is the intent record's name in the stage: the offer's
@@ -425,46 +431,45 @@ func runs(good []bool) (out [][2]int64) {
 	return out
 }
 
-// run takes the files, each chunk verified on arrival against the
-// manifest's root and written only then, at its place, in order (spec
-// Send; one that does not verify ends the session, Bad, nothing after it
-// written; the chunks the want kept are not sent),
-// verifies each file from disk, and commits the whole offer once every
-// file is verified (spec Finish). Up to inFlight chunks are verified at
-// once while the next frames are read (docs/performance.md); a chunk not
-// yet written when the session ends is not kept (spec Cut).
-func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error) {
+// read takes session s's set: every file's start, tree and end, and the
+// set's chunks, each verified on arrival against the manifest's root at
+// the offset the set says comes next and written only then, at its place,
+// in order (spec Stripe.tla Read; Resume.tla Send; one that does not
+// verify ends the session, Bad, nothing after it written; a data frame
+// carries no offset). Up to inFlight chunks are verified at once while
+// the next frames are read (docs/performance.md); a chunk not yet written
+// when the session ends is not kept (spec Cut). It returns nil once the
+// done frame is read: the set is on disk (each file synced), the files
+// verified from disk and committed by the caller (spec Finish).
+func (r *receiver) read(s *sess) error {
 	var (
-		buf     []byte
-		f       *os.File
-		cur     = -1          // the entry being received
-		left    int64         // its bytes still to come
-		todo    [][2]int64    // its chunks still to come, in runs
-		off     int64         // its next chunk's offset
-		tr      verified.Tree // its tree
-		q       []pending     // its chunks read, oldest first, not yet written
-		free    [][]byte      // their buffers, for the next
-		next    int           // entries before it are done
-		written int64
-		a       Answer
+		c     = s.c
+		buf   []byte
+		f     *os.File
+		cur   = -1          // the entry being received
+		left  int64         // its bytes still to come
+		todo  [][2]int64    // its chunks still to come, in runs
+		off   int64         // its next chunk's offset
+		tr    verified.Tree // its tree
+		got   int           // its tree's bytes read
+		wrote bool          // f written by this session
+		q     []pending     // its chunks read, oldest first, not yet written
+		free  [][]byte      // their buffers, for the next
+		next  int           // entries before it are done
+		files int
 	)
-	asked := map[int][][2]int64{}
-	for _, p := range parts {
-		asked[p.Index] = p.Have
-	}
-	if traceOn {
-		defer func() {
-			if f != nil {
-				r.trCut()
-			}
-			r.trCutPending()
-		}()
-	}
-	fail := func(format string, args ...any) (Answer, error) {
+	r.trSession(s, true)
+	defer func() {
+		if f != nil {
+			r.trCut(s)
+		}
+		r.trSession(s, false)
+	}()
+	fail := func(format string, args ...any) error {
 		if f != nil {
 			_ = f.Close()
 		}
-		return Answer{}, fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)
+		return fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)
 	}
 	// keep writes the oldest pending chunk once it verified, or ends the
 	// session at it (Bad).
@@ -472,9 +477,7 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 		pd := q[0]
 		q = q[1:]
 		if !<-pd.ok {
-			if traceOn {
-				r.trBad(pd.p, pd.off)
-			}
+			r.trBad(s, pd.p, pd.off)
 			_ = f.Close()
 			f = nil
 			return fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, pd.off, ErrUnverified)
@@ -487,14 +490,11 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 		if afterWrite != nil {
 			afterWrite(f, pd.off)
 		}
-		if traceOn {
-			r.trData(pd.p, pd.off)
-		}
+		r.trData(s, pd.p, pd.off)
+		wrote = true
 		free = append(free, pd.p)
-		written += int64(len(pd.p))
-		if progress != nil {
-			progress(written)
-		}
+		s.done.Add(1)
+		r.wrote(int64(len(pd.p)))
 		return nil
 	}
 	for {
@@ -505,57 +505,61 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			if f != nil {
 				_ = f.Close()
 			}
-			return Answer{}, noEOF(err)
+			return noEOF(err)
 		}
 		buf = p[:0]
 		switch t {
 		case frameStart:
-			var s start
-			if err := json.Unmarshal(p, &s); err != nil || f != nil || s.Index < next || s.Index >= len(r.m.Entries) || r.m.Entries[s.Index].Dir {
-				return fail("start of entry %d", s.Index)
+			var st start
+			if err := json.Unmarshal(p, &st); err != nil || f != nil || st.Index < next || st.Index >= len(r.m.Entries) || r.m.Entries[st.Index].Dir {
+				return fail("start of entry %d", st.Index)
 			}
-			e := r.m.Entries[s.Index]
-			have, ok := asked[s.Index]
-			if s.Kept && !ok {
+			e := r.m.Entries[st.Index]
+			have, ok := s.have[st.Index]
+			if st.Kept && !ok {
 				return fail("kept runs of %q, which was not asked", e.Path)
 			}
-			if !s.Kept {
+			if !st.Kept {
 				have = nil
 			}
 			todo = need(have, chunks(e.Size))
-			if traceOn {
-				r.trStart(s.Index, todo)
+			r.trStart(s, st.Index, todo)
+			if f, err = r.open(e, st.Kept); err != nil {
+				return err
 			}
-			if f, err = r.open(e, s.Kept); err != nil {
-				return Answer{}, err
-			}
-			cur, left, off = s.Index, 0, 0
+			cur, left, off, got, wrote = st.Index, 0, 0, 0, false
 			for _, t := range todo {
 				left += min(t[1]*maxData, e.Size) - t[0]*maxData
 			}
 			if len(todo) > 0 {
 				off = todo[0][0] * maxData
 			}
-			tr = verified.Tree{Root: root(e), Size: e.Size}
+			tr = verified.Tree{Root: root(e), Size: e.Size, Outboard: r.tree(cur)}
 		case frameTree:
 			whole := verified.OutboardSize(tr.Size)
-			if f == nil || len(tr.Outboard)+len(p) > whole {
+			if f == nil || got+len(p) > whole {
 				return fail("tree past its end in entry %d", cur)
 			}
-			tr.Outboard = append(tr.Outboard, p...)
-			if len(tr.Outboard) == whole && !oneChunk(tr.Size) { // kept for a later session's resume (keptTree)
-				if err := r.sr.WriteFile(treeName(cur), tr.Outboard, 0o600); err != nil {
+			// The receive keeps one tree per file, the first session's to
+			// read it whole; the others' tree frames are only counted.
+			// ponytail: every session is sent every tree (1/4096 of the
+			// bytes each); a want naming the trees held ends that.
+			if got += len(p); r.tree(cur) == nil {
+				tr.Outboard = append(tr.Outboard, p...)
+			}
+			if got == whole {
+				if tr.Outboard, err = r.keepTree(cur, tr.Outboard); err != nil {
 					_ = f.Close()
-					return Answer{}, err
+					return err
 				}
 			}
 		case frameData:
-			if f == nil || len(tr.Outboard) != verified.OutboardSize(tr.Size) || len(todo) == 0 || int64(len(p)) != min(maxData, tr.Size-off) {
+			if f == nil || got != verified.OutboardSize(tr.Size) || len(todo) == 0 || int64(len(p)) != min(maxData, tr.Size-off) {
 				return fail("data before the tree, past the end or not a chunk of entry %d", cur)
 			}
 			if len(q) == inFlight {
 				if err := keep(); err != nil {
-					return Answer{}, err
+					return err
 				}
 			}
 			// p is read into buf: it becomes the chunk's, the next frame is
@@ -575,41 +579,40 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			}
 		case frameEnd:
 			var e end
-			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 || len(tr.Outboard) != verified.OutboardSize(tr.Size) {
+			if err := json.Unmarshal(p, &e); err != nil || f == nil || e.Index != cur || left != 0 || got != verified.OutboardSize(tr.Size) {
 				return fail("end of entry %d", cur)
 			}
 			for len(q) > 0 {
 				if err := keep(); err != nil {
-					return Answer{}, err
+					return err
 				}
 			}
-			err := syncFile(f) // on stable storage before the commit begins (syncStage)
+			var err error
+			if wrote {
+				err = syncFile(f) // on stable storage before the commit begins (syncStage)
+			}
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
 			f = nil
 			if err != nil {
-				return Answer{}, err
+				return err
 			}
-			err = r.verify(cur, tr)
-			if traceOn {
-				r.trVerified(err == nil)
-			}
-			if err != nil {
-				return Answer{}, err
-			}
-			a.Files++
-			a.Bytes += r.m.Entries[cur].Size
+			files++
 			next = cur + 1
 		case frameDone:
-			if f != nil || a.Files != countFiles(r.m) {
-				return fail("done with %d of %d files", a.Files, countFiles(r.m))
+			if f != nil || files != countFiles(r.m) {
+				return fail("done with %d of %d files", files, countFiles(r.m))
 			}
-			if err := r.commit(); err != nil { // verified: the stage stays for the next session
-				return Answer{Message: err.Error()}, nil
+			return nil
+		case frameAnswer: // the sender refused the want (an older protocol)
+			var a Answer
+			_ = json.Unmarshal(p, &a)
+			if f != nil {
+				_ = f.Close()
+				f = nil
 			}
-			a.OK = true
-			return a, nil
+			return refused{a}
 		default:
 			return fail("frame %q", t)
 		}
@@ -629,9 +632,11 @@ type pending struct {
 // wrong).
 var afterWrite func(f *os.File, off int64)
 
-// open opens entry e's part: emptied when the sender keeps none of it,
+// open opens entry e's part, its directories made: emptied when the sender keeps none of it,
 // else cut to the file's size (its chunks are written in place).
 func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
+	r.mu.Lock() // the sessions': os.Root's MkdirAll is not safe against another at once
+	defer r.mu.Unlock()
 	if d := path.Dir(e.Path); d != "." {
 		if err := r.sr.MkdirAll(d, 0o755); err != nil {
 			return nil, err

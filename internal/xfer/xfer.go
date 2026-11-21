@@ -37,15 +37,15 @@ import (
 )
 
 // Version is the highest protocol version this end speaks; MinVersion the
-// one every 1.x end speaks. The manifest names the sender's highest, the
+// lowest it accepts. The manifest names the sender's highest, the
 // receiver's want the version both then speak: the lower of the two (a
-// want naming none: MinVersion). The manifest frame itself is MinVersion's
-// in every 1.x release. A value choice on the existing first two frames,
-// no new state: no TLA+ model (spec/README.md models the resume and the
-// commit).
+// want naming none: MinVersion). Version 5 (a hard cut: a 4 end is
+// refused at both ends with an answer naming the versions) is the
+// striped receive: up to K sessions of one transfer at once, each want
+// naming the session's set (spec/Stripe.tla), and Answer.Part.
 const (
-	Version    = 4
-	MinVersion = 4
+	Version    = 5
+	MinVersion = 5
 )
 
 // Frame types.
@@ -134,9 +134,12 @@ type end struct {
 	Index int `json:"i"`
 }
 
-// Answer is the receiver's last word.
+// Answer is the receiver's last word on a session. Part: the session's
+// set is in and the offer is not yet committed (another session of the
+// transfer gets the final answer): a --once sender serves on.
 type Answer struct {
 	OK      bool   `json:"ok"`
+	Part    bool   `json:"part,omitempty"`
 	Message string `json:"message,omitempty"`
 	Files   int    `json:"files"`
 	Bytes   int64  `json:"bytes"`

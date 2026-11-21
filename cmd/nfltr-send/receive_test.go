@@ -29,7 +29,7 @@ func receiveJSON(t *testing.T, r *relaycoretest.Relay, addr string, mode nfnet.D
 		return (&net.Dialer{}).DialContext(ctx, "tcp", r.Proxy)
 	}}
 	var out bytes.Buffer
-	code := receiveTo(t.Context(), &out, cfg, tg, mode, to, 3, true)
+	code := receiveTo(t.Context(), &out, cfg, tg, mode, to, 3, 4, true)
 	return code, out.String()
 }
 
@@ -103,7 +103,7 @@ func TestReceiveFailureOnceAndJSON(t *testing.T) {
 	cfg := nfnet.Config{Relay: tg.Address.Relay, Plaintext: true, DialRelay: func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", r.Proxy)
 	}}
-	if code := receiveTo(t.Context(), &text, cfg, tg, nfnet.DirectOff, t.TempDir(), 3, false); code != 12 || strings.Count(text.String(), "relaying needs") != 1 || strings.Count(text.String(), "\n") != 1 {
+	if code := receiveTo(t.Context(), &text, cfg, tg, nfnet.DirectOff, t.TempDir(), 3, 4, false); code != 12 || strings.Count(text.String(), "relaying needs") != 1 || strings.Count(text.String(), "\n") != 1 {
 		t.Fatalf("text: exit %d, %q: want the reason once, on one line", code, text.String())
 	}
 }

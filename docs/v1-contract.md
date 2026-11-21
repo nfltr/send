@@ -34,6 +34,7 @@ root; a name that already exists in `--to` refuses the transfer.
 | `--address-file <file>` | receive | `-` (stdin) | where the address is read from (a file others may read is refused, except on Windows) |
 | `--to <dir>` | receive | `.` | the receiving directory |
 | `--tries <n>` | receive | 10 | sessions to try before giving up, each resuming the last |
+| `--connections <n>` | receive | 4 | sessions of the transfer at once (1 to 16), each on a connection of its own; a transfer of fewer 64 MiB runs takes fewer |
 | `--json` | receive | off | end with one JSON line on stderr (below) |
 
 Flags are Go `flag` syntax: `-flag value`, `--flag value`, `--flag=value`,
@@ -147,13 +148,17 @@ A 1.x end works with any 1.x end, both ways: a sender of one 1.x release
 and a receiver of another complete a transfer of a file and of many
 small files, resume a transfer cut at either end, and end with the exit
 codes above, relayed and direct, and with a sender with no account.
-Every 1.x end speaks version 4 (`xfer.MinVersion`) of the transfer
-protocol. The sender names its highest version in the manifest (a frame
-that stays version 4's in all of 1.x); the receiver takes any from 4 to
-its own (`xfer.Version`), names the lower of the two in its answer (the
-want), and both speak that one; a receiver refuses a manifest below 4
-(exit 4), a sender a want outside 4 to its own. A v0.1 receiver names
-none, which is 4. `make cross-version`
+Every 1.x end speaks version 5 (`xfer.MinVersion`) of the transfer
+protocol: a receive striped over up to `--connections` sessions at once
+(`spec/Stripe.tla`). The sender names its highest version in the
+manifest; the receiver takes any from 5 to its own (`xfer.Version`),
+names the lower of the two in its answer (the want), and both speak that
+one. Version 5 was a hard cut before 1.0 (nfltr
+`docs/decisions/send-line-rate-2026-11-21.md`): a receiver refuses a
+manifest below 5 with an answer naming both versions (exit 4, refused),
+and a sender answers a want outside 5 to its own the same way, so a v0.1
+receiver (version 4) ends at once with a protocol error (exit 6), never
+retrying. `make cross-version`
 (`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
 `make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its

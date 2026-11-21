@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"io"
 	"net"
 	"os"
@@ -59,7 +60,15 @@ func serveAnon(t *testing.T, r *relaycoretest.Relay, dir string) (string, <-chan
 	return addr[:len(addr)-1], code
 }
 
+// connections is the receives' --connections in this package's tests and
+// benchmarks (BenchmarkDirectCPU: the transfer's sessions at once).
+var connections = flag.Int("connections", 4, "receives: sessions at once")
+
 func receiveFrom(t testing.TB, r *relaycoretest.Relay, addr string, mode nfnet.DirectMode, to string) int {
+	return receiveFromK(t, r, addr, mode, to, *connections)
+}
+
+func receiveFromK(t testing.TB, r *relaycoretest.Relay, addr string, mode nfnet.DirectMode, to string, k int) int {
 	tg, err := nfnet.ParseTarget(addr)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +76,7 @@ func receiveFrom(t testing.TB, r *relaycoretest.Relay, addr string, mode nfnet.D
 	cfg := nfnet.Config{Relay: tg.Address.Relay, Plaintext: true, DialRelay: func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", r.Proxy)
 	}}
-	return receiveTo(t.Context(), os.Stderr, cfg, tg, mode, to, 3, false)
+	return receiveTo(t.Context(), os.Stderr, cfg, tg, mode, to, 3, k, false)
 }
 
 func offer(t *testing.T) string {
