@@ -117,7 +117,7 @@ func TestOnceRelayedSenderReadsTheAnswer(t *testing.T) {
 // cutAnswer is a session whose first write of an answer frame cuts the
 // receiver's connections to the relay before it goes.
 type cutAnswer struct {
-	io.ReadWriter
+	xfer.Session
 	cut func()
 }
 
@@ -125,7 +125,7 @@ func (c cutAnswer) Write(p []byte) (int, error) {
 	if len(p) > 0 && p[0] == 'A' {
 		c.cut()
 	}
-	return c.ReadWriter.Write(p)
+	return c.Session.Write(p)
 }
 
 // silencer forwards TCP to a relay address; silence makes every
@@ -254,12 +254,12 @@ func onceToldAfterACut(t *testing.T, side string) {
 			}
 		})
 	}
-	defer func(f func(io.ReadWriter, string, xfer.Progress) (xfer.Answer, error)) { receive = f }(receive)
-	receive = func(rw io.ReadWriter, dir string, p xfer.Progress) (xfer.Answer, error) {
-		return xfer.Receive(cutAnswer{rw, cut}, dir, p)
+	defer func(f func(context.Context, xfer.Session, xfer.Receiving) (xfer.Answer, error)) { receive = f }(receive)
+	receive = func(ctx context.Context, first xfer.Session, o xfer.Receiving) (xfer.Answer, error) {
+		return xfer.ReceiveFrom(ctx, cutAnswer{first, cut}, o)
 	}
 	to := t.TempDir()
-	if code := receiveTo(t.Context(), os.Stderr, cfg, tg, nfnet.DirectOff, to, 5, false); code != 0 {
+	if code := receiveTo(t.Context(), os.Stderr, cfg, tg, nfnet.DirectOff, to, 5, 4, false); code != 0 {
 		t.Fatalf("receive exit %d", code)
 	}
 	if _, err := os.Stat(filepath.Join(to, "offer", "a.txt")); err != nil {

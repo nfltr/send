@@ -12,15 +12,21 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/nfltr/relay-core/relaycoretest"
 	"github.com/nfltr/relay/client/nfnet"
 	"github.com/nfltr/send/internal/xfer"
 )
 
-var transferMB = flag.Int("transfer-mb", 256, "BenchmarkDirectCPU: MiB per transfer")
+var (
+	transferMB = flag.Int("transfer-mb", 256, "BenchmarkDirectCPU: MiB per transfer")
+	benchK     = flag.String("bench-k", "1", "BenchmarkDirectCPU, BenchmarkRelayedCPU: the --connections of their sub-benchmarks, in order (k=<n>)")
+)
 
 func cpuTime() time.Duration {
 	var r syscall.Rusage
@@ -30,7 +36,9 @@ func cpuTime() time.Duration {
 
 // BenchmarkDirectCPU: one file of -transfer-mb, served with no account and
 // received over the direct path (loopback), sender and receiver in this
-// process; reports both ends' CPU seconds per GiB (getrusage) and the rate.
+// process, over -bench-k's --connections in turn (k=<n>, a relay each:
+// anonymous listens are rate limited); reports both ends' CPU seconds per
+// GiB (getrusage) and the rate.
 // bench/cpu/netem.sh runs two builds of it interleaved behind netem (lane
 // SENDCPU), so a CPU difference between builds is measured, not inferred
 // from cloud runs on different machines.
@@ -60,11 +68,21 @@ func benchCPU(b *testing.B, mode nfnet.DirectMode) {
 	if err := f.Close(); err != nil {
 		b.Fatal(err)
 	}
-	r := anonRelay(b, true)
 	src, err := xfer.NewSource([]string{dir})
 	if err != nil {
 		b.Fatal(err)
 	}
+	for _, ks := range strings.Split(*benchK, ",") {
+		k, err := strconv.Atoi(ks)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Run("k="+ks, func(b *testing.B) { transferCPU(b, anonRelay(b, true), src, mode, k) })
+	}
+}
+
+// transferCPU is one sub-benchmark of benchCPU: k sessions at once.
+func transferCPU(b *testing.B, r *relaycoretest.Relay, src *xfer.Source, mode nfnet.DirectMode, k int) {
 	cfg := nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}
 	if mode == nfnet.DirectOff {
 		cfg.Token = r.Key
@@ -82,7 +100,7 @@ func benchCPU(b *testing.B, mode nfnet.DirectMode) {
 			b.Fatal(err)
 		}
 		go func() { _, _ = io.Copy(io.Discard, pr) }()
-		if code := receiveFrom(b, r, addr[:len(addr)-1], mode, b.TempDir()); code != 0 {
+		if code := receiveFromK(b, r, addr[:len(addr)-1], mode, b.TempDir(), k); code != 0 {
 			b.Fatalf("receive exit %d", code)
 		}
 		cpu, wall = cpu+cpuTime()-c0, wall+time.Since(w0)

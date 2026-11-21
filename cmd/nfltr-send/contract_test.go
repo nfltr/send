@@ -87,9 +87,9 @@ func TestContractDoc(t *testing.T) {
 	}
 	same(t, "receive --json keys", jsonKeys(t), docJSON)
 
-	// Every 1.x end speaks version 4; a receiver takes [4, its own].
-	if !strings.Contains(doc, fmt.Sprintf("speaks version %d (`xfer.MinVersion`", xfer.MinVersion)) || xfer.MinVersion != 4 || xfer.Version < xfer.MinVersion {
-		t.Errorf("xfer.MinVersion is %d, Version %d: every 1.x end speaks 4 (docs/v1-contract.md \"Compatibility\")", xfer.MinVersion, xfer.Version)
+	// Every 1.x end speaks version 5; a receiver takes [5, its own].
+	if !strings.Contains(doc, fmt.Sprintf("speaks version %d (`xfer.MinVersion`", xfer.MinVersion)) || xfer.MinVersion != 5 || xfer.Version < xfer.MinVersion {
+		t.Errorf("xfer.MinVersion is %d, Version %d: every 1.x end speaks 5 (docs/v1-contract.md \"Compatibility\")", xfer.MinVersion, xfer.Version)
 	}
 
 	// -h exits 0, as help does; version is a command.

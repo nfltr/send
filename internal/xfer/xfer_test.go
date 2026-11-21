@@ -315,8 +315,8 @@ func TestChunkThatLandedWrongIsCaught(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(stage, "data", "big.bin")); err != nil || fi.Size() != 2<<20 {
 		t.Fatalf("part %v, %v: want the whole file kept", fi, err)
 	}
-	sr, rr := session(t, s, dst, 0)
-	if rr.err != nil || !rr.a.OK || sr.sent != maxData+5 {
+	sr, rr := session(t, s, dst, 0) // the small file landed before the final check: kept
+	if rr.err != nil || !rr.a.OK || sr.sent != maxData {
 		t.Fatalf("resumed: sender %+v, receiver %+v", sr, rr)
 	}
 	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
@@ -1086,10 +1086,10 @@ func TestVersionNegotiation(t *testing.T) {
 		want string
 		ok   bool
 	}{
-		"want names the sender's": {`{"version":4}`, true},
+		"want names the sender's": {`{"version":5}`, true},
 		"want names none":         {`{}`, true},
-		"want names a newer":      {`{"version":5}`, false},
-		"want names an older":     {`{"version":3}`, false},
+		"want names a newer":      {`{"version":6}`, false},
+		"want names an older":     {`{"version":4}`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, err := NewSource([]string{src})
@@ -1169,15 +1169,16 @@ func TestSenderRefusesAnEarlierFileChangedBeforeTheCommit(t *testing.T) {
 
 // A staged file written by another program after it was verified, while a
 // later file is received, refuses the commit (ErrUnverified in the
-// answer), the stage kept; the next session sends what no longer verifies
+// answer), the stage kept (written here once a.bin verified, while b.bin
+// is verified); the next session sends what no longer verifies
 // and commits the offered files (spec Offer.tla Commit, mutant
 // no-receiver-recheck).
 func TestStagedFileWrittenAfterItsCheckRefusesTheCommit(t *testing.T) {
 	base, s := twoFiles(t, 1<<20)
 	dst := t.TempDir()
-	afterWrite = func(f *os.File, off int64) {
-		if filepath.Base(f.Name()) == "b.bin" && off == 0 {
-			a := filepath.Join(filepath.Dir(f.Name()), "a.bin")
+	afterVerify = func(name string) {
+		if filepath.Base(name) == "a.bin" {
+			a := name
 			w, err := os.OpenFile(a, os.O_WRONLY, 0)
 			must(t, err)
 			_, err = w.WriteAt([]byte("another program"), 3*maxData+5)
@@ -1187,7 +1188,7 @@ func TestStagedFileWrittenAfterItsCheckRefusesTheCommit(t *testing.T) {
 		}
 	}
 	_, rr := session(t, s, dst, 0)
-	afterWrite = nil
+	afterVerify = nil
 	if rr.a.OK || !strings.Contains(rr.a.Message, ErrUnverified.Error()) {
 		t.Fatalf("receiver %+v: want the commit refused, ErrUnverified", rr)
 	}
