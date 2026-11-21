@@ -60,7 +60,6 @@ func BenchmarkDirectCPU(b *testing.B) {
 	if err := f.Close(); err != nil {
 		b.Fatal(err)
 	}
-	r := anonRelay(b, true)
 	src, err := xfer.NewSource([]string{dir})
 	if err != nil {
 		b.Fatal(err)
@@ -70,7 +69,7 @@ func BenchmarkDirectCPU(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		b.Run("k="+ks, func(b *testing.B) { directCPU(b, r, src, k) })
+		b.Run("k="+ks, func(b *testing.B) { directCPU(b, anonRelay(b, true), src, k) }) // a relay each: its anonymous listens are rate limited
 	}
 }
 

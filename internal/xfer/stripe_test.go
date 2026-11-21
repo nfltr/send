@@ -126,6 +126,57 @@ func TestStripedReceiveSurvivesAConnectionCutMidChunk(t *testing.T) {
 	}
 }
 
+// flip corrupts one byte of the data it passes after skip bytes: a chunk
+// that does not verify on one session.
+type flip struct {
+	net.Conn
+	mu   sync.Mutex
+	skip int64
+}
+
+func (f *flip) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.skip >= 0 && f.skip < int64(len(p)) {
+		q := append([]byte(nil), p...)
+		q[f.skip] ^= 0xff
+		f.skip = -1
+		return f.Conn.Write(q)
+	}
+	if f.skip >= 0 {
+		f.skip -= int64(len(p))
+	}
+	return f.Conn.Write(p)
+}
+
+// A chunk that does not verify ends its session only (Resume.tla Bad):
+// the chunk and the rest of the set go back into the pool, another
+// session fetches them, and the transfer commits the offered bytes (spec
+// Stripe.tla Corrupt, Read; mutant accept-unverified).
+func TestStripedReceiveRefusesABadChunkOnOneSession(t *testing.T) {
+	shortRuns(t, 2)
+	src := tree(t, 20*maxData)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	x := &striped{t: t, s: s, wrap: func(n int, c net.Conn) io.ReadWriter {
+		if n == 2 {
+			return &flip{Conn: c, skip: 2*maxData + 4096} // inside its second chunk
+		}
+		return c
+	}}
+	a, err := x.receive(t.Context(), dst, 3)
+	if err != nil || !a.OK {
+		t.Fatalf("receive %+v, %v", a, err)
+	}
+	if len(x.sent) < 4 {
+		t.Fatalf("sessions %v: want the refused one replaced", x.sent)
+	}
+	if digest(t, src) != digest(t, dst+"/data") {
+		t.Fatal("differs from the source")
+	}
+}
+
 // slow delays every write: a session on a slow path.
 type slow struct {
 	net.Conn

@@ -23,10 +23,10 @@ func (r *receiver) trData(*sess, []byte, int64)    {}
 func (r *receiver) trBad(*sess, []byte, int64)     {}
 func (r *receiver) trVerified(int, bool)           {}
 func (r *receiver) trCut(*sess)                    {}
-func (r *receiver) trSession(*sess, bool)          {}
 func (r *receiver) trPool([]piece, int)            {}
 func (r *receiver) trSet(*sess)                    {}
 func (r *receiver) trDone(*sess, error)            {}
+func (r *receiver) trFinish()                      {}
 
 type sessTrace struct{}
 

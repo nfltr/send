@@ -1,0 +1,7 @@
+{"ev":"Init","n":2}
+{"ev":"Start","pool":[1,2]}
+{"ev":"Open","k":1,"set":[1,2]}
+{"ev":"Send","k":1,"i":1}
+{"ev":"Cut","k":1}
+{"ev":"Open","k":2,"set":[1,2]}
+{"ev":"Send","k":2,"i":1}

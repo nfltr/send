@@ -1,7 +1,7 @@
 #!/bin/sh
 # traces.sh: the xfer tests under -tags sendtrace write their receivers'
 # steps (internal/xfer/trace_on.go); each trace is checked against its model with
-# TLC (TraceCommit.tla, TraceResume.tla: accepted when a behaviour takes
+# TLC (TraceCommit.tla, TraceResume.tla, TraceStripe.tla: accepted when a behaviour takes
 # every line), the actions no accepted trace takes are listed (test gaps),
 # and every fixture in spec/traces/ named mutant-* must be rejected
 # (spec/README.md "Traces"). java and tla2tools.jar from $TLA_JAVA and
@@ -16,7 +16,7 @@ mkdir "$tmp/t"
 
 # check FILE: TLC on FILE with the model its name says; FILE.out.
 check() {
-	case $1 in *-commit.ndjson) m=TraceCommit ;; *) m=TraceResume ;; esac
+	case $1 in *-commit.ndjson) m=TraceCommit ;; *-stripe.ndjson | *-s[0-9]*.ndjson) m=TraceStripe ;; *) m=TraceResume ;; esac
 	d=$tmp/w/$(basename "$1")
 	mkdir -p "$d"
 	sed "1s|^|CONSTANT TraceFile = \"$1\"\n|" "$m.cfg" >"$d/t.cfg"
@@ -42,8 +42,9 @@ echo "$n traces checked"
 # Spec actions no accepted trace takes: the behaviour TLC prints for an
 # accepted trace (TraceNotDone violated) is the one that took every line.
 for a in TOpen TSend TBad TFinish TCut TServed HRot HCrash HChange TraceCommit:TOpen TBusy TTaken TWrite TVerify \
-	TraceCommit:TCut TBegin TBeginRefused TRename TRenameRefused TStop TraceCommit:TFinish TExpire HForeign HReplace; do
-	case $a in TraceCommit:*) mod=TraceCommit a=${a#*:} ;; TBusy | TTaken | TWrite | TVerify | TBegin* | TRename* | TStop | TExpire | HForeign | HReplace) mod=TraceCommit ;; *) mod=TraceResume ;; esac
+	TraceCommit:TCut TBegin TBeginRefused TRename TRenameRefused TStop TraceCommit:TFinish TExpire HForeign HReplace \
+	TraceStripe:TStart TRestart TraceStripe:TOpen TraceStripe:TSend TraceStripe:TBad TraceStripe:TCut TClose TraceStripe:TFinish HCorrupt HDie TraceStripe:HCrash; do
+	case $a in TraceCommit:*) mod=TraceCommit a=${a#*:} ;; TraceStripe:*) mod=TraceStripe a=${a#*:} ;; TStart | TRestart | TClose | HCorrupt | HDie) mod=TraceStripe ;; TBusy | TTaken | TWrite | TVerify | TBegin* | TRename* | TStop | TExpire | HForeign | HReplace) mod=TraceCommit ;; *) mod=TraceResume ;; esac
 
 	grep -qE "^State [0-9]+: <$a line .* of module $mod>" "$tmp/cov" || echo "test gap: no trace takes $mod $a"
 	[ -z "${TRACE_WHO:-}" ] || grep -lE "^State [0-9]+: <$a line .* of module $mod>" "$tmp"/t/*.out | sed "s|^|  $mod $a: |"

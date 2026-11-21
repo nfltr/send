@@ -327,6 +327,7 @@ func (r *receiver) final(s *sess, end func(Session) error) (Answer, error) {
 	if err := r.commit(); err != nil { // verified: the stage stays for the next session
 		return r.answer(s, Answer{Message: err.Error()}, end)
 	}
+	r.trFinish()
 	a.OK = true
 	return r.answer(s, a, end)
 }
