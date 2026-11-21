@@ -15,6 +15,12 @@
   `part` (a `--once` sender serves on). A transfer of fewer 64 MiB runs
   than `--connections` takes one session per run (`spec/Stripe.tla`,
   checked before the code; its traces by `spec/TraceStripe.tla`).
+- **The receiver reads nothing back before the commit** of a file it
+  verified chunk by chunk and wrote whole in this receive (the full re-read
+  and re-hash cost about 1 CPU s per GiB and 1.5 s at the end of a 10 GiB
+  receive); a file part of which a cut transfer left is verified on disk as
+  before, and another program's write to a staged file once it is complete
+  still refuses the commit (its mtime). `spec/Stripe.tla` `Trusted`.
 - **Hard cut**: a v0.1 end (protocol 4) and this one refuse each other at
   once, with an answer naming both versions: a receiver exits 4 (refused),
   a v0.1 receiver exits 6 (protocol error), neither retries.
