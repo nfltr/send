@@ -15,7 +15,9 @@ start to its exit with the files committed. Test 5, on 2026-11-20, is
 the v0.1.9 release binary on the longest path between the provider's
 regions; it adds to the history above and replaces none of it. Test 6,
 on 2026-11-21, is the same release between that provider's machines and
-Google Cloud machines (["Between providers"](#6-between-providers-v019)).
+Google Cloud machines (["Between providers"](#6-between-providers-v019-and-v0110));
+its 10 GiB and 100 GiB runs from Helsinki to Singapore were repeated
+later that day on the v0.1.10 release.
 
 ## What limited a transfer
 
@@ -333,7 +335,7 @@ of 100 GiB; each run is `run.sh` with `TIMEOUT=14400`.
   are 4 MiB after v0.1.9; locally (not on F) a 20 GiB file's sender
   start to manifest went from 43.6 to 38.2 s (`docs/performance.md`).
 
-## 6. Between providers (v0.1.9)
+## 6. Between providers (v0.1.9 and v0.1.10)
 
 On 2026-11-21, the v0.1.9 release binary (from the GitHub release on each
 machine, `SHA256SUMS` and its signature checked) between machines at the
@@ -369,14 +371,16 @@ both ends).
 
 | run | runs | ok | RTT ms | address to received s | Mbit/s | range | paths | direct at s | BLAKE3 received = sent |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 GiB, H to J, direct | 3 | 3/3 | 6.3 | 6.9 | 1248 | 446-1286 | relayed+direct | 0.23-0.24 | 2/2 (one not checked) |
-| 1 GiB, J to H, direct | 3 | 3/3 | 6.1 | 6.0 | 1429 | 1368-1461 | relayed+direct | 0.29-0.33 | 3/3 |
-| 1 GiB, H to J, relayed | 3 | 3/3 | 6.1 | 5.3 | 1630 | 1624-1665 | relayed/no_answer (2), relayed | - | 3/3 |
-| 1 GiB, J to H, relayed | 3 | 3/3 | 5.8 | 4.7 | 1812 | 1711-2440 | relayed | - | 3/3 |
-| 10 GiB, H to J, direct | 2 | 2/2 | 5.9 | 51.1 | 1681 | 1668-1693 | relayed+direct | 0.24 | 2/2 |
-| 1 GiB, I to K, direct | 3 | 3/3 | 260.8 | 36.1 | 238 | 192-262 | relayed+direct | 5.9 | 3/3 |
-| 1 GiB, I to K, relayed | 3 | 3/3 | 259.5 | 100.2 | 86 | 81-86 | relayed/no_answer (2), relayed/withheld | - | 3/3 |
-| 10 GiB, I to K, direct | 2 | 0/2 | 260.4 | stopped at 589 and 283, 0.43 and 1.59 GB in | 5.8 and 44.8 | - | (stopped) | 5.9 | - |
+| 1 GiB, H to J, direct, v0.1.9 | 3 | 3/3 | 6.3 | 6.9 | 1248 | 446-1286 | relayed+direct | 0.23-0.24 | 2/2 (one not checked) |
+| 1 GiB, J to H, direct, v0.1.9 | 3 | 3/3 | 6.1 | 6.0 | 1429 | 1368-1461 | relayed+direct | 0.29-0.33 | 3/3 |
+| 1 GiB, H to J, relayed, v0.1.9 | 3 | 3/3 | 6.1 | 5.3 | 1630 | 1624-1665 | relayed/no_answer (2), relayed | - | 3/3 |
+| 1 GiB, J to H, relayed, v0.1.9 | 3 | 3/3 | 5.8 | 4.7 | 1812 | 1711-2440 | relayed | - | 3/3 |
+| 10 GiB, H to J, direct, v0.1.9 | 2 | 2/2 | 5.9 | 51.1 | 1681 | 1668-1693 | relayed+direct | 0.24 | 2/2 |
+| 1 GiB, I to K, direct, v0.1.9 | 3 | 3/3 | 260.8 | 36.1 | 238 | 192-262 | relayed+direct | 5.9 | 3/3 |
+| 1 GiB, I to K, relayed, v0.1.9 | 3 | 3/3 | 259.5 | 100.2 | 86 | 81-86 | relayed/no_answer (2), relayed/withheld | - | 3/3 |
+| 10 GiB, I to K, direct, v0.1.9 | 2 | 0/2 | 260.4 | stopped at 589 and 283, 0.43 and 1.59 GB in | 5.8 and 44.8 | - | (stopped) | 5.9 | - |
+| 10 GiB, I to K, direct, v0.1.10 | 2 | 2/2 | 260.0 | 247.2 | 348 | 341-354 | relayed+direct | - | 2/2 |
+| 100 GiB, I to K, direct, v0.1.10 | 1 | 1/1 | 261.1 | 2486.3 | 346 | - | relayed+direct | - | 1/1 |
 
 A receiver killed (SIGKILL) at half a 1 GiB file and started again
 (`resume.sh`), once per pair: H to J kept 650.6 MB and the second receive
@@ -401,7 +405,7 @@ resumed files' BLAKE3 equals the sent file's.
   port, which has no UDP listener (2 to 6 per run), and at the end of a
   run for a closed socket.
 - **10 GiB, I to K: the direct path slowed down and did not recover**
-  (open, for the direct path's owner). Run 1 received 100 and then
+  on v0.1.9 (closed in v0.1.10, below). Run 1 received 100 and then
   50 Mbit/s in its first 20 s direct, then 3 to 5 Mbit/s for 8 minutes;
   run 2 received 272, 157, 97, 57, 45 and then 21 to 35 Mbit/s over
   4 minutes. Both were stopped by hand (run 1 by SIGQUIT for its goroutine
@@ -419,6 +423,22 @@ resumed files' BLAKE3 equals the sent file's.
   congestion window; that is the likely cause, not yet shown. TCP on the
   same path (the relayed runs) held 81-86 Mbit/s. The 1 GiB direct runs
   finished at 192-262 Mbit/s before the rate fell far.
+- **v0.1.10 on I to K** (the release binary, checked as above, on new
+  machines of the same types and places; the relay, its placement and
+  J's and K's firewall as before, so the direct path again formed with no
+  rule added). The direct path's QUIC uses BBR in v0.1.10 instead of
+  NewReno. Both 10 GiB runs finished, at 354 and 341 Mbit/s (receives of
+  242.9 s and 251.6 s), and the uninterrupted 100 GiB (107.4 GB) in
+  2,486.3 s, 41.4 minutes, at 346 Mbit/s, with 45.3 s more before it to
+  print the address (hashing the file). Measured each 10 s at the
+  receiver's interface, the rate held 287-412 Mbit/s once the transfer
+  was direct (100 GiB: 337-412, median 390), with no 30 s under
+  50 Mbit/s; each was one session, with no resume, and each received
+  file's BLAKE3 equals the sent one's. K counted no UDP receive-buffer
+  drops in any of the three. Peak resident memory: the sender 110-114 MB
+  for 10 GiB and 163 MB for 100 GiB, the receiver 124-170 MB and 232 MB.
+  CPU: the sender used 277-282 CPU s per 10 GiB and 2,631 for 100 GiB
+  (about one of its 4 vCPUs), the receiver 160-163 and 1,485.
 - **Relayed above direct at 6 ms**: on H and J, the relayed path (TCP to
   the relay on the sender) moved 1,624 to 2,440 Mbit/s and the direct path
   (QUIC) 1,248 to 1,461 Mbit/s. The relayed runs also took about half
@@ -444,3 +464,5 @@ resumed files' BLAKE3 equals the sent file's.
 - The "after" binaries are a local build of v0.1.2 with the relay client
   patched, not a release (tests 1 to 4). Test 5 is the v0.1.9 release:
   2 runs on one pair of machines on one evening.
+- The v0.1.10 rows of test 6 are 2 runs of 10 GiB and one of 100 GiB, on
+  one pair of machines in one afternoon.
