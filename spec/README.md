@@ -256,7 +256,10 @@ live session's chunk in another's set: `Accounted`), `resume-trust-log`
 the sender's and QUIC's: no receiver line shows it, so no trace fixture;
 the model's `no-window` mutant covers it. A receive of one session also
 writes Resume.tla's per-file lines (`TraceResume.tla`); a striped one
-writes only Stripe's (its sessions' chunks of a file interleave).
+writes only Stripe's (its sessions' chunks of a file interleave), so a
+Resume trace may open on chunks no line of it sent: `TraceResume.tla`'s
+`HPrior` stages them before its first `Open`, and a chunk no line sends
+takes that `Open`'s value as the offer's.
 
 ## Environment assumptions
 

@@ -23,7 +23,11 @@ TraceN == Log[1].n
 At(ev, j) == {Lines[k].v : k \in {k \in DOMAIN Lines : Lines[k].ev = ev /\ Lines[k].i = j}}
 OpenVals == UNION {{Lines[k].part[j] : j \in DOMAIN Lines[k].part} : k \in {k \in DOMAIN Lines : Lines[k].ev = "Open"}} \ {Hole}
 TraceVals == {"x"} \cup OpenVals \cup UNION {At("Send", j) \cup At("Bad", j) : j \in 1..TraceN}
-C(j) == IF At("Send", j) = {} THEN {"x"} ELSE At("Send", j)
+\* A chunk never sent in this trace: the offer's is the value its first Open
+\* found staged (an earlier receive fetched it: a striped one writes no
+\* Resume lines), else unknown ("x").
+Staged(j) == {Lines[k].part[j] : k \in {k \in DOMAIN Lines : Lines[k].ev = "Open" /\ \A m \in 1..k - 1 : Lines[m].ev # "Open"}} \ {Hole}
+C(j) == IF At("Send", j) # {} THEN At("Send", j) ELSE IF Staged(j) # {} THEN Staged(j) ELSE {"x"}
 RECURSIVE Prod(_, _)
 Prod(G, j) == IF j = 0 THEN {<<>>} ELSE {Append(s, v) : s \in Prod(G, j - 1), v \in G[j]}
 Offers == Prod([j \in 1..TraceN |-> C(j)], TraceN)
@@ -53,9 +57,13 @@ HRot == Hid /\ Rot
            \/ /\ NE.ev = "Finish" /\ ~NE.ok /\ part = offer
               /\ \E i \in Pos : part'[i] = "x"
 HCrash == Hid /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part /\ Crash
+\* HPrior: the trace's first Open finds chunks an earlier receive staged that
+\* this trace does not show (a striped receive writes no Resume lines).
+HPrior == Hid /\ l = 1 /\ part = Empty /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part
+          /\ UNCHANGED <<offer, src, need, sess, committed, faults, resumed, refused>>
 HChange == Hid /\ NE.ev \in {"Open", "Bad"} /\ src' \in Srcs \ {src} /\ Change
 
 TraceInit == offer \in Offers /\ Init /\ l = 1
-TraceNext == TOpen \/ TSend \/ TBad \/ TFinish \/ TCut \/ TServed \/ HRot \/ HCrash \/ HChange
+TraceNext == TOpen \/ TSend \/ TBad \/ TFinish \/ TCut \/ TServed \/ HRot \/ HCrash \/ HPrior \/ HChange
 TraceNotDone == l <= Len(Lines)
 =============================================================================
