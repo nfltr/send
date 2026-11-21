@@ -70,7 +70,7 @@ In `REL_OUT` (default `$TMPDIR/nfltr-send-rel-<mode>-<time>`):
 ## Running it
 
 ```console
-$ make reliability                                  # nfltr-send from this checkout, nfltr v2.1.73
+$ make reliability                                  # nfltr-send from this checkout, nfltr v2.1.78
 $ make reliability SEND_VERSION=v0.1.5 NFLTR_VERSION=v2.1.74   # released binaries
 $ make reliability REL_BIN=/path/to/bins            # nfltr-send, nfltr, nfltr-relay
 $ make reliability REL_N=1 REL_CELLS='^cut-'        # a subset
