@@ -13,7 +13,9 @@ relay can carry a transfer. The scripts and how to rerun them are in
 runs named. "address to received" is the receiver's own run, from its
 start to its exit with the files committed. Test 5, on 2026-11-20, is
 the v0.1.9 release binary on the longest path between the provider's
-regions; it adds to the history above and replaces none of it.
+regions; it adds to the history above and replaces none of it. Test 6,
+on 2026-11-21, is the same release between that provider's machines and
+Google Cloud machines (["Between providers"](#6-between-providers-v019)).
 
 ## What limited a transfer
 
@@ -331,6 +333,103 @@ of 100 GiB; each run is `run.sh` with `TIMEOUT=14400`.
   are 4 MiB after v0.1.9; locally (not on F) a 20 GiB file's sender
   start to manifest went from 43.6 to 38.2 s (`docs/performance.md`).
 
+## 6. Between providers (v0.1.9)
+
+On 2026-11-21, the v0.1.9 release binary (from the GitHub release on each
+machine, `SHA256SUMS` and its signature checked) between machines at the
+provider of tests 1 to 5 and Google Cloud machines. Each pair's private
+relay (`nfltr-relay` from nfltr v2.1.78) runs on its first machine, which
+sends, as in tests 3 and 5; for J to H, J holds a machine certificate
+from H's relay.
+
+| machine | vCPU | RAM | disk | where | interface MTU |
+|---|---|---|---|---|---|
+| H | 4 dedicated | 16 GB | 160 GB NVMe | Falkenstein, DE | 1500 |
+| I | 4 dedicated | 16 GB | 160 GB NVMe | Helsinki, FI | 1500 |
+| J | 4 (c3-standard-4-lssd) | 16 GB | 375 GB local NVMe SSD | Google Cloud europe-west3 (Frankfurt, DE) | 1460 |
+| K | 4 (c3-standard-4-lssd) | 16 GB | 375 GB local NVMe SSD | Google Cloud asia-southeast1 (Singapore) | 1460 |
+
+Debian 13, Linux 6.12, `rmem_max` and `wmem_max` 7,500,000, IPv4 only,
+page caches dropped before each run. J and K keep the default network's
+firewall: nothing comes in but ssh and ICMP, and no rule was added. The
+paths (`baseline.sh`, 5 s per test, the Google Cloud end as the iperf3
+client since its firewall closes inbound ports):
+
+| path | RTT ms | TCP 1 stream Mbit/s | TCP 4 streams | UDP Mbit/s received (loss at 2 Gbit/s offered) |
+|---|---|---|---|---|
+| H to J (Falkenstein to Frankfurt) | 6.3 | 3067 | 12435 | 1682 (0.0 %) |
+| J to H | 6.1 | 1660 | 5384 | 1945 (2.7 %) |
+| I to K (Helsinki to Singapore) | 260.2 | 59 | 181 | 1614 (0.0 %) |
+
+Each row is `run.sh` (or `resume.sh`) with medians of the runs named; a
+"relayed" run drops UDP between the two at the receiver (`wan.sh block`).
+"direct at" is from the receiver's first packet to the relay to the first
+0.1 s in which 100 datagrams arrived from the sender (packet captures of
+both ends).
+
+| run | runs | ok | RTT ms | address to received s | Mbit/s | range | paths | direct at s | BLAKE3 received = sent |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 GiB, H to J, direct | 3 | 3/3 | 6.3 | 6.9 | 1248 | 446-1286 | relayed+direct | 0.23-0.24 | 2/2 (one not checked) |
+| 1 GiB, J to H, direct | 3 | 3/3 | 6.1 | 6.0 | 1429 | 1368-1461 | relayed+direct | 0.29-0.33 | 3/3 |
+| 1 GiB, H to J, relayed | 3 | 3/3 | 6.1 | 5.3 | 1630 | 1624-1665 | relayed/no_answer (2), relayed | - | 3/3 |
+| 1 GiB, J to H, relayed | 3 | 3/3 | 5.8 | 4.7 | 1812 | 1711-2440 | relayed | - | 3/3 |
+| 10 GiB, H to J, direct | 2 | 2/2 | 5.9 | 51.1 | 1681 | 1668-1693 | relayed+direct | 0.24 | 2/2 |
+| 1 GiB, I to K, direct | 3 | 3/3 | 260.8 | 36.1 | 238 | 192-262 | relayed+direct | 5.9 | 3/3 |
+| 1 GiB, I to K, relayed | 3 | 3/3 | 259.5 | 100.2 | 86 | 81-86 | relayed/no_answer (2), relayed/withheld | - | 3/3 |
+| 10 GiB, I to K, direct | 2 | 0/2 | 260.4 | stopped at 589 and 283, 0.43 and 1.59 GB in | 5.8 and 44.8 | - | (stopped) | 5.9 | - |
+
+A receiver killed (SIGKILL) at half a 1 GiB file and started again
+(`resume.sh`), once per pair: H to J kept 650.6 MB and the second receive
+wrote 423.4 MB, the ideal (missing bytes plus one 256 KiB chunk); I to K
+kept 599.8 MB and wrote 474.2 MB, the ideal plus 4,096 bytes. Both
+resumed files' BLAKE3 equals the sent file's.
+
+- **Through the default firewall**: every direct run went direct with no
+  rule added, in both directions on H and J, so no run with a UDP rule
+  was needed. The firewall keeps state: the Google Cloud end's datagram
+  to the peer opens the way back. In every capture, the machine at the
+  other provider sent no datagram to the Google Cloud end before the
+  first one from it arrived (the Google Cloud end sent 1 to 4 first). At 6 ms the transfer went direct 0.23-0.33 s
+  after the receiver reached the relay; at 260 ms after 5.9 s, the first
+  datagram to the peer at 3.9 s. The relay carried the bytes before
+  that (first byte 0.1 s and 3.9 s).
+- **MTU**: no IP fragments and no ICMP "fragmentation needed" in any
+  capture; the large datagrams carry DF. Toward J and K the direct path
+  grew to 1,441-byte UDP payloads (1,469-byte IP packets, above the
+  receiving interface's 1460), and they arrived. The only ICMP was "port
+  unreachable": for datagrams the receiver sends to the relay's HTTPS
+  port, which has no UDP listener (2 to 6 per run), and at the end of a
+  run for a closed socket.
+- **10 GiB, I to K: the direct path slowed down and did not recover**
+  (open, for the direct path's owner). Run 1 received 100 and then
+  50 Mbit/s in its first 20 s direct, then 3 to 5 Mbit/s for 8 minutes;
+  run 2 received 272, 157, 97, 57, 45 and then 21 to 35 Mbit/s over
+  4 minutes. Both were stopped by hand (run 1 by SIGQUIT for its goroutine
+  dumps, run 2 by SIGTERM), so their exit statuses are not the program's
+  verdict. Neither end was busy, the RTT
+  stayed at 260 ms under the load, and the wire lost 0.04-0.06 % of the
+  datagrams. The sender's path switch waited on its window while the
+  receiver waited for data (goroutine dumps of both ends). This path
+  reorders: in run 2, 29 % of the datagrams arrived after a later-sent
+  one, up to 10 places later (matched between the two ends' captures);
+  iperf3 at 200 Mbit/s counted 43,960 of 93,990 datagrams out of order
+  from I to K and none from K to I; the captures of H to J show none. QUIC declares a
+  packet lost once one sent 3 later is acknowledged (RFC 9002, section
+  6.1.1), so reordering past 3 reads as loss, and each loss narrows the
+  congestion window; that is the likely cause, not yet shown. TCP on the
+  same path (the relayed runs) held 81-86 Mbit/s. The 1 GiB direct runs
+  finished at 192-262 Mbit/s before the rate fell far.
+- **Relayed above direct at 6 ms**: on H and J, the relayed path (TCP to
+  the relay on the sender) moved 1,624 to 2,440 Mbit/s and the direct path
+  (QUIC) 1,248 to 1,461 Mbit/s. The relayed runs also took about half
+  the CPU: 3.3-4.4 CPU s at each end per GiB, against 6.1-10.3 direct. One H to J direct run took
+  19.3 s against 6.7-6.9 for the others; why is not known.
+- **Receive buffers**: with `rmem_max` at the README's 7,500,000, the
+  receivers counted UDP receive-buffer drops (`UdpRcvbufErrors`): 28,582 on
+  H, 1,429 on J and 53,409 on K over the session.
+- **CPU, 10 GiB H to J**: the sender used 66 CPU s in 51 s, the receiver
+  84 (1.3 and 1.6 of 4 vCPUs).
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are
@@ -339,8 +438,9 @@ of 100 GiB; each run is `run.sh` with `TIMEOUT=14400`.
   than most real loss. Its cap models a bottleneck link, not any
   particular network.
 - IPv4 only.
-- All runs are from one day's set of paths, on one provider's backbone
-  between its regions, not the public internet's last miles.
+- Tests 1 to 5 are from one day's set of paths, on one provider's backbone
+  between its regions; test 6 crosses between two providers' networks;
+  none is the public internet's last miles.
 - The "after" binaries are a local build of v0.1.2 with the relay client
   patched, not a release (tests 1 to 4). Test 5 is the v0.1.9 release:
   2 runs on one pair of machines on one evening.
