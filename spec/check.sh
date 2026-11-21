@@ -1,5 +1,5 @@
 #!/bin/sh
-# check.sh: TLC on Resume.tla, End.tla and Commit.tla (spec/README.md): the model with -coverage 1
+# check.sh: TLC on Resume.tla, End.tla, Commit.tla and Offer.tla (spec/README.md): the model with -coverage 1
 # (exit 1 on an action no state took), each witness violated, each mutant
 # caught. java and tla2tools.jar from $TLA_JAVA and $TLA_JAR, else
 # github.com/nfltr/link's scripts/fetch-tla.sh output (the pinned versions).
@@ -48,5 +48,17 @@ done
 for m in drop-stage no-intent trust-foreign replace sweep-deletes-intent no-lock trust-moved sweep-trust-moved; do
 	tlc Commit "Commit-mutant-$m"
 	if v=$(grep -E -o '(Invariant|Action property) [A-Za-z]+ (of the PROPERTIES )?is violated|Temporal propert(y [A-Za-z]+ was|ies were) violated' "$tmp/Commit-mutant-$m.out"); then echo "ok   Commit mutant $m caught ($v)"; else echo "FAIL Commit mutant $m not caught"; fail=1; fi
+done
+tlc Offer Offer -coverage 1
+zero=$(grep ' of module Offer: 0$' "$tmp/Offer.out" || true)
+if grep -q 'No error has been found' "$tmp/Offer.out" && [ -z "$zero" ]; then echo "ok   Offer: invariants and Ended hold, every action taken"
+else echo "FAIL Offer"; cat "$tmp/Offer.out"; fail=1; fi
+for c in WitnessEarlierChanged WitnessEarlierTouched WitnessCutThenCommit WitnessChangedAfterDone; do
+	tlc Offer "Offer$c"
+	if grep -q "Invariant $c is violated" "$tmp/Offer$c.out"; then echo "ok   Offer $c violated (reachable)"; else echo "FAIL Offer $c not violated"; fail=1; fi
+done
+for m in no-sender-recheck no-receiver-recheck; do
+	tlc Offer "Offer-mutant-$m"
+	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/Offer-mutant-$m.out"); then echo "ok   Offer mutant $m caught ($v)"; else echo "FAIL Offer mutant $m not caught"; fail=1; fi
 done
 exit $fail

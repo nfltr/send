@@ -1,4 +1,4 @@
-# spec: nfltr-send's resume, commit and end (TLA+)
+# spec: nfltr-send's resume, offer, commit and end (TLA+)
 
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
@@ -149,6 +149,43 @@ processes; see "Traces").
 | `close-confirms` | the receiver takes its own close's clean return as the sender's word (SENDONCE's first fix: the soak's link drop still left the sender serving, the relay having taken the answer) | `Retold` |
 | `sender-gives-up` | the rejected design: a `--once` sender that reads a reset after its last byte exits as if delivered | `Confirmed` |
 
+### Offer.tla
+
+`Offer.tla` models an offer of F files to its one commit (lane SENDMULTI).
+Resume.tla is one file, whose `Finish` commits it at its final check; an
+offer commits once, after its last file, so an earlier file can change
+after its check and before that commit: on the sender's disk (`Change`) or,
+written by another program, in the receiver's stage (`Touch`). A file is a
+version (the offered one 0; a write makes the next), sending it is one step
+(`SendFile`: Resume.tla's whole session of it, the sender's check at its
+end, the receiver's verify of what landed). After the last file the sender
+checks every file again before its done frame (`Done`: size and mtime, as
+`unchanged`), and the receiver checks every staged file again before it
+commits (`Commit`: size and mtime against those it saw when it verified
+the file); either refuses typed: the sender's `ErrChanged`, the receiver's
+`ErrUnverified` with the stage kept (the next session verifies it again,
+Resume.tla `Open`). A write between the done frame and the commit, one
+frame's flight, is after the transfer (`WitnessChangedAfterDone`). F = 2
+files, two faults: 128 states. Not traced (both processes; see "Traces").
+
+| invariant / property | meaning |
+|---|---|
+| `Safe` | every committed file is the offered one (what was sent) |
+| `Current` | at its done frame, the sender's last word before the commit, every one of its files is the offered one |
+| `Ended` | the offer commits, or fails typed (the sender's `ErrChanged`, the receiver's refused commit) |
+
+| witness (violated) | shows |
+|---|---|
+| `WitnessEarlierChanged` | an earlier file changed on the sender's disk after its check, refused at the done frame |
+| `WitnessEarlierTouched` | a staged file changed after its verify, the commit refused |
+| `WitnessCutThenCommit` | a commit after a cut session |
+| `WitnessChangedAfterDone` | a sender's file written after the done frame, the offer committed (the window the design leaves) |
+
+| mutant | the failure it plants | caught by |
+|---|---|---|
+| `no-sender-recheck` | the done frame after the per-file checks only (lane SENDTAIL's finding: an earlier file rewritten while a later one was sent was committed as offered) | `Current` |
+| `no-receiver-recheck` | the commit after the per-file verifies only (a staged file written after its verify, while later files were received) | `Safe` |
+
 ## Environment assumptions
 
 | assumption | source |
@@ -163,6 +200,7 @@ processes; see "Traces").
 | a rename is atomic across a crash; a synced file and its directory entry survive one. The received files are synced before the intent record: one syncfs(2) of the file system (Linux), an fsync(2) per file then the intent's F_FULLFSYNC, which flushes the drive's whole cache (macOS), FlushFileBuffers or fsync per file (elsewhere) | rename(2), fsync(2), syncfs(2), fcntl(2) F_FULLFSYNC; `internal/xfer/sync_*.go` |
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `internal/xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `internal/xfer/rename_*.go` |
+| a write to a file changes its size or its mtime (both checks of a file, the per-file ones and the rechecks before the done frame and the commit, compare size and mtime, not the bytes); a write that restores both is caught only while the file is sent (the receiver verifies each chunk) | stat(2) st_mtim (POSIX: a write marks it for update); `internal/xfer/send.go` `unchanged`, `recheck`; `internal/xfer/receive.go` `verify`, `recheck` |
 
 ## Code map
 
@@ -180,6 +218,7 @@ processes; see "Traces").
 | `Commit.tla` `Expire` (and `Open` by the sweep) | `internal/xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
 | `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `internal/xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `internal/xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
 | `End.tla` `Read` | `internal/xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
+| `Offer.tla` `SendFile`, `Done` (the sender's checks), `Commit` (the receiver's recheck) | `internal/xfer/send.go` `Serve`, `sendFile`, `unchanged`, `recheck`; `internal/xfer/receive.go` `run`, `verify`, `recheck`, `commit` |
 | `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `internal/xfer/trace_on.go` (the recorder), `internal/xfer/trace_off.go`; the call sites in `internal/xfer/receive.go` (behind `traceOn`) |
 
 ## Traces
