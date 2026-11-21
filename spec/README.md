@@ -297,7 +297,7 @@ takes that `Open`'s value as the offer's.
 |---|---|
 | `Open` (the part verified with its kept tree, the chunks asked for) | `internal/xfer/receive.go` `parts`, `runs`, `keptTree`, `open`; `internal/xfer/xfer.go` `need`, `validRuns`; `internal/xfer/send.go` `sendFile`; `internal/xfer/verified` `Good` |
 | `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `internal/xfer/send.go` `sendFile`; `internal/xfer/receive.go` `read` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `internal/xfer/verified` `Chunk` |
-| `Finish` (every chunk on disk verified, kept on mismatch) | `internal/xfer/receive.go` `verify`, `commit`; `internal/xfer/verified` `Verify` |
+| `Finish` (a file this receive verified and wrote whole trusted, Stripe.tla `Trusted`; any other verified on disk, kept on mismatch) | `internal/xfer/receive.go` `wroteChunk`, `trusted`, `verify`, `commit`; `internal/xfer/stripe.go` `final`; `internal/xfer/verified` `Verify` |
 | `Cut`, `Crash` | `internal/xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
 | `Rot` | the disk; `internal/xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
 | `Change` | the sender's disk; `internal/xfer/send.go` `unchanged`; the stage is named by the manifest's digest (`newReceiver`) |
