@@ -12,12 +12,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/nfltr/relay/client/machinecert"
 )
@@ -29,6 +27,7 @@ import (
 // it while it serves (relay client machinecert.Loop).
 type machine struct {
 	path  string
+	pin   string // the relay's pinned certificate (--cert-sha256), for renewals
 	key   *ecdsa.PrivateKey
 	saved savedCert // run's goroutine only, after loadMachine
 	cur   atomic.Pointer[tls.Certificate]
@@ -98,7 +97,7 @@ func (m *machine) forRelay(addr string) error {
 // run renews the certificate until ctx ends; a final refusal or an expiry
 // is logged and the relay then refuses the certificate (enrol again).
 func (m *machine) run(ctx context.Context, log *slog.Logger) {
-	c := &machinecert.Client{BaseURL: m.saved.BaseURL, HTTP: &http.Client{Timeout: time.Minute}}
+	c := m.client()
 	cur := m.saved.Cert
 	err := machinecert.Loop{
 		Renew: func(ctx context.Context, cur *machinecert.Cert) (*machinecert.Cert, error) {
@@ -109,6 +108,14 @@ func (m *machine) run(ctx context.Context, log *slog.Logger) {
 	if err != nil {
 		log.Error("machine certificate not renewed: run `nfltr config login` to enrol this machine again", "error", err)
 	}
+}
+
+// client renews at the certificate's relay, trusting its pinned
+// certificate as the sessions do (relay client machinecert.Client.Pin;
+// lane PINENROL: renewals used Go's default transport, which trusts no
+// pin).
+func (m *machine) client() *machinecert.Client {
+	return &machinecert.Client{BaseURL: m.saved.BaseURL, Pin: m.pin}
 }
 
 // save keeps a renewed certificate in machine.json (replaced whole, 0600)
