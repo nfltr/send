@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.1.11
+
+- **Direct transfers are faster on fast links, for less CPU.** Between
+  two 8-vCPU machines in one cloud zone (0.2 ms, 15.6 Gbit/s on one TCP
+  stream), a 10 GiB direct transfer ran at 2.71 Gbit/s (median of 3;
+  v0.1.10 on the same machines, run in turn with it: 1.54) and 100 GiB
+  at 2.55, BLAKE3 equal. The sender spent 6.8 CPU s per GiB (v0.1.10:
+  10.3) and the receiver 8.4 (10.1). The relayed path is unchanged:
+  3.26 Gbit/s on both versions ([docs/scale.md](docs/scale.md) test 7).
+  From the path switch, whose send and receive buffers are now rings: an
+  acknowledgement no longer moves every unacknowledged byte to the front
+  of its buffer (pathswitch v0.1.4); and from the direct path's QUIC
+  library: on Linux the receiver reads datagrams in batches (UDP GRO), a
+  send batch holds up to 44 packets (was 14), and a connection queues up
+  to 4096 received packets (quiclink v0.7.4).
+- **A closed session no longer leaves a write hanging**: a direct
+  session's write blocked on the peer's window returns an error once the
+  session is closed; before, it waited (quiclink v0.7.4).
+- **CPU benchmarks**: `make bench-line` measures one direct connection
+  on loopback (2 GiB, 6 runs) with a CPU profile; `make bench-ab` runs
+  the direct and relayed CPU benchmarks (`BenchmarkDirectCPU`,
+  `BenchmarkRelayedCPU`) of builds that differ only in their
+  dependencies, in turn.
+- The protocol and the wire are unchanged from v0.1.10.
+- Built on link v0.13.3, pathswitch v0.1.4, quiclink v0.7.4, relay client
+  v0.24.4, relay proto v0.22.1 and relay-core v0.19.4.
+
 ## v0.1.10
 
 - **A sender whose machine was off past its certificate's life serves

@@ -18,8 +18,8 @@ on 2026-11-21, is the same release between that provider's machines and
 Google Cloud machines (["Between providers"](#6-between-providers-v019-and-v0110));
 its 10 GiB and 100 GiB runs from Helsinki to Singapore were repeated
 later that day on the v0.1.10 release. Test 7, the same day, is v0.1.10
-on a fast short link inside one Google Cloud zone
-(["Fast low-latency link"](#7-fast-low-latency-link-l-to-m-one-google-cloud-zone-v0110)).
+on a fast short link inside one Google Cloud zone, repeated on v0.1.11
+(["Fast low-latency link"](#7-fast-low-latency-link-l-to-m-one-google-cloud-zone-v0110-and-v0111)).
 
 ## What limited a transfer
 
@@ -460,7 +460,7 @@ resumed files' BLAKE3 equals the sent file's.
 - **CPU, 10 GiB H to J**: the sender used 66 CPU s in 51 s, the receiver
   84 (1.3 and 1.6 of 4 vCPUs).
 
-## 7. Fast low-latency link (L to M, one Google Cloud zone, v0.1.10)
+## 7. Fast low-latency link (L to M, one Google Cloud zone, v0.1.10 and v0.1.11)
 
 Can one transfer fill a fast, short link? On 2026-11-21 the v0.1.10
 release ran between two Google Cloud n2-standard-8 machines (8 vCPU
@@ -503,6 +503,36 @@ and held 1.9-2.1 Gbit/s on the wire to the end.
   transfers together into one 8-vCPU receiver top out near 4-5 Gbit/s
   (4.3 measured).
 
+**v0.1.11.** The same test ran on v0.1.11 on a second pair of machines of
+the same type in the same zone (same CPU model, RTT 0.21 ms, 15.6 Gbit/s
+on one TCP stream), with v0.1.10 run in turn on the same pair. v0.1.10
+was slower there than on the first pair (1.54 against 1.80 Gbit/s
+direct, 3.26 against 3.74 relayed), so the two pairs differ by about
+15 %; compare versions within a pair.
+
+| run, second pair | path | v0.1.10 Gbit/s | v0.1.11 Gbit/s | CPU s per GiB, sender / receiver: v0.1.10 to v0.1.11 | BLAKE3 |
+|---|---|---|---|---|---|
+| 10 GiB (3 runs each) | direct | 1.52-1.63 (median 1.54) | 2.68-2.72 (median 2.71) | 10.3 / 10.1 to 6.8 / 8.4 | equal |
+| 100 GiB | direct | | 2.55 | to 7.3 / 9.2 | equal |
+| 10 GiB (3 runs each) | relayed | 3.25-3.26 | 3.26 | 4.9 / 4.5, both | equal |
+| 2 x 10 GiB at once, total | direct | | 4.42 (2.21 each) | | every receive exit 0 |
+| 4 x 10 GiB at once, total | direct | | 5.36 (1.34 each) | | every receive exit 0 |
+
+- **Direct is 76 % faster for a third less sender CPU.** The path
+  switch's buffers are rings in v0.1.11, so an acknowledgement no longer
+  moves the unacknowledged bytes (the suspect above), and on Linux the
+  QUIC library reads and writes datagrams in batches (GRO and GSO). No
+  socket buffer overflowed at either end, and the sender resent 0.01 %
+  of its packets, most of them already received.
+- **The relayed path is unchanged** (3.26 Gbit/s, the same CPU on both
+  versions).
+- **One direct transfer is still below the link**: neither end has a
+  goroutine near one CPU (the busiest, QUIC's connection loop, 0.7). The
+  sender's QUIC connection waits 41 % of the time, half for the next
+  stream write (a stream takes one write at a time, so encryption and
+  packing alternate rather than overlap) and half for its congestion
+  window. Concurrent transfers still add up.
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are
@@ -521,3 +551,5 @@ and held 1.9-2.1 Gbit/s on the wire to the end.
   one pair of machines in one afternoon.
 - Test 7 is 3 runs of 10 GiB, one of 100 GiB and one relayed 10 GiB, on one
   pair of machines in one zone in one afternoon; internal addresses only.
+  Its v0.1.11 rows are 3 direct and 3 relayed runs of 10 GiB per version,
+  one 100 GiB and the concurrent runs, on a second pair the same evening.
