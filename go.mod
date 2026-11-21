@@ -27,7 +27,7 @@ require (
 	github.com/nfltr/link v0.13.3 // indirect
 	github.com/nfltr/link/pathswitch v0.1.4-0.20261121165531-59f3b3286bd8 // indirect
 	github.com/nfltr/link/peerlink/quiclink v0.7.2 // indirect
-	github.com/nfltr/quic-go v0.63.1-nfltr.4 // indirect
+	github.com/nfltr/quic-go v0.63.1-nfltr.4.0.20261121170707-a51de2af00a9 // indirect
 	github.com/nfltr/relay/proto v0.22.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
