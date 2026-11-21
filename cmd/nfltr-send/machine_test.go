@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/nfltr/relay/client/machinecert"
+	"github.com/nfltr/relay/client/relaytrust"
+	"github.com/nfltr/relay/client/relaytrust/relaytrusttest"
 )
 
 // enrol writes machine.json and machine.key into dir as `nfltr config
@@ -181,6 +183,38 @@ func TestAddressNamesTheRelayWithoutPort443(t *testing.T) {
 		cfg, _, err := c.config()
 		if err != nil || cfg.Relay != want {
 			t.Errorf("--relay %s: address relay %q (%v), want %q", relay, cfg.Relay, err, want)
+		}
+	}
+}
+
+// A renewal reaches a relay whose self-signed certificate is pinned
+// (--cert-sha256, else $NFLTR_RELAY_CERT_SHA256, else the saved relay's),
+// as the sessions do; without the pin it is refused (lane PINENROL:
+// renewals used Go's default transport, which trusts no pin).
+func TestMachineRenewalHonoursThePin(t *testing.T) {
+	skipKeyFileOnWindows(t)
+	t.Setenv(relaytrust.PinEnv, "")
+	dir := t.TempDir()
+	enrol(t, dir, "grpc.relay.example")
+	m, err := loadMachine(filepath.Join(dir, "machine.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var self relaytrusttest.Kind
+	for _, k := range relaytrusttest.New(t).Kinds {
+		if k.Name == "self-signed" {
+			self = k
+		}
+	}
+	m.saved.BaseURL = "https://" + relaytrusttest.Addr(relaytrusttest.Serve(t, self.Cert))
+	defer relaytrust.CloseIdleConnections()
+	for _, pin := range []string{relaytrust.Fingerprint(self.Cert.Leaf.Raw), ""} {
+		m.pin = pin
+		_, err := m.client().Renew(context.Background(), &m.saved.Cert, m.key)
+		// The server answers 200 with no body: an error about the answer
+		// means the renewal reached it.
+		if reached := err != nil && strings.Contains(err.Error(), "machinecert: the answer"); reached != (pin != "") {
+			t.Errorf("pin %q: reached the relay %v: %v", pin, reached, err)
 		}
 	}
 }

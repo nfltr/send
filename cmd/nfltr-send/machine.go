@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"time"
 
 	"github.com/nfltr/relay/client/machinecert"
-	"github.com/nfltr/relay/client/relaytrust"
 )
 
 // machine is this machine's account machine certificate as `nfltr config
@@ -31,6 +29,7 @@ import (
 // it while it serves (relay client machinecert.Loop).
 type machine struct {
 	path    string
+	pin     string // the relay's pinned certificate (--cert-sha256), for renewals
 	key     *ecdsa.PrivateKey
 	mu      sync.Mutex // one renewal at a time (run's, a connection's); holds saved
 	saved   savedCert
@@ -154,11 +153,12 @@ func (m *machine) renew(ctx context.Context, from *machinecert.Cert) (*machinece
 }
 
 // client renews at the certificate's relay, trusting its pinned
-// certificate ($NFLTR_RELAY_CERT_SHA256) as the sessions do: a relay of
-// one's own with a self-signed certificate (Go's default transport
-// refused it, and the renewal never went through).
+// certificate as the sessions do: --cert-sha256, else
+// $NFLTR_RELAY_CERT_SHA256 (relay client machinecert.Client.Pin; a relay
+// of one's own with a self-signed certificate refused Go's default
+// transport, and the renewal never went through).
 func (m *machine) client() *machinecert.Client {
-	return &machinecert.Client{BaseURL: m.saved.BaseURL, HTTP: &http.Client{Timeout: time.Minute, Transport: relaytrust.Transport(os.Getenv(relaytrust.PinEnv))}}
+	return &machinecert.Client{BaseURL: m.saved.BaseURL, Pin: m.pin}
 }
 
 // save (under mu, or before the machine is shared) keeps a renewed
