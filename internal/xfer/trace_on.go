@@ -51,6 +51,7 @@ type stageTrace struct {
 	verified map[int]bool
 	active   map[int]bool // receivers in it
 	files    map[int]*fileTrace
+	stripes  map[int]*os.File // entry -> its Stripe.tla trace
 }
 
 type fileTrace struct {
@@ -60,12 +61,19 @@ type fileTrace struct {
 }
 
 type recvTrace struct {
-	st   *stageTrace
-	p    int
-	pc   string // "recv", "renaming", "done"; "" once ended
-	pend map[string]any
-	held bool // traceMu held by the caller (the sweep)
-	cur  int  // the entry being received
+	st     *stageTrace
+	p      int
+	pc     string // "recv", "renaming", "done"; "" once ended
+	pend   map[string]any
+	held   bool // traceMu held by the caller (the sweep)
+	single bool // one session: Resume.tla's per-file lines (a striped receive has only Stripe.tla's)
+}
+
+// sessTrace is a session's: the entry it receives, and per entry whether
+// its set there is still being read (Stripe.tla's st[k] = "open").
+type sessTrace struct {
+	cur  int
+	open map[int]bool
 }
 
 func traceAtomic() func() { traceMu.Lock(); return traceMu.Unlock }
@@ -120,7 +128,7 @@ func (r *receiver) trOpen(created bool, outcome string) {
 		if err != nil {
 			panic(err)
 		}
-		st := &stageTrace{f: f, name: name, m: r.m, state: make([]string, len(r.tops)), verified: map[int]bool{}, active: map[int]bool{}, files: map[int]*fileTrace{}}
+		st := &stageTrace{f: f, name: name, m: r.m, state: make([]string, len(r.tops)), verified: map[int]bool{}, active: map[int]bool{}, files: map[int]*fileTrace{}, stripes: map[int]*os.File{}}
 		for i := range st.state {
 			st.state[i] = "none"
 		}
@@ -195,12 +203,14 @@ func chunk(h hash.Hash) string { return hex.EncodeToString(h.Sum(nil))[:12] }
 // trStart: a file's start frame (Resume Open: the part on disk, a chunk's
 // digest or "h" where it has no byte, and the chunks asked for; Commit
 // Write of its top).
-func (r *receiver) trStart(i int, todo [][2]int64) {
+func (r *receiver) trStart(s *sess, i int, todo [][2]int64) {
+	s.tr.cur = i
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	st := r.tr.st
-	if st == nil {
+	if st == nil || !r.tr.single {
 		return
 	}
-	r.tr.cur = i
 	e := r.m.Entries[i]
 	if t := st.topOf[i]; st.state[t] == "none" {
 		st.state[t] = "part"
@@ -244,23 +254,29 @@ func (r *receiver) trStart(i int, todo [][2]int64) {
 }
 
 // trData: a chunk verified and written at off (Resume Send).
-func (r *receiver) trData(p []byte, off int64) {
-	if r.tr.st == nil || r.tr.st.files[r.tr.cur] == nil {
+func (r *receiver) trData(s *sess, p []byte, off int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stripeLine(s, "Send", off/maxData+1)
+	if r.tr.st == nil || !r.tr.single || r.tr.st.files[s.tr.cur] == nil {
 		return
 	}
 	h := sha256.New()
 	h.Write(p)
-	r.tr.st.emit(r.tr.st.files[r.tr.cur].f, map[string]any{"ev": "Send", "i": off/maxData + 1, "v": chunk(h)})
+	r.tr.st.emit(r.tr.st.files[s.tr.cur].f, map[string]any{"ev": "Send", "i": off/maxData + 1, "v": chunk(h)})
 }
 
 // trBad: a chunk that does not verify, refused (Resume Bad).
-func (r *receiver) trBad(p []byte, off int64) {
-	if r.tr.st == nil || r.tr.st.files[r.tr.cur] == nil {
+func (r *receiver) trBad(s *sess, p []byte, off int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stripeLine(s, "Bad", off/maxData+1)
+	if r.tr.st == nil || !r.tr.single || r.tr.st.files[s.tr.cur] == nil {
 		return
 	}
 	h := sha256.New()
 	h.Write(p)
-	r.tr.st.emit(r.tr.st.files[r.tr.cur].f, map[string]any{"ev": "Bad", "i": off/maxData + 1, "v": chunk(h)})
+	r.tr.st.emit(r.tr.st.files[s.tr.cur].f, map[string]any{"ev": "Bad", "i": off/maxData + 1, "v": chunk(h)})
 }
 
 // trVerified: a file's digest over what is on disk compared (Resume
@@ -268,12 +284,12 @@ func (r *receiver) trBad(p []byte, off int64) {
 // recheck, trRechecked, or a Cut if the session ends first: Resume's
 // Finish commits, and the offer commits only after its recheck, Offer.tla);
 // its top's last file verified is Commit Verify.
-func (r *receiver) trVerified(ok bool) {
+func (r *receiver) trVerified(i int, ok bool) {
 	st := r.tr.st
 	if st == nil {
 		return
 	}
-	if ft := st.files[r.tr.cur]; ft != nil {
+	if ft := st.files[i]; ft != nil {
 		if ok {
 			ft.pend = true
 		} else {
@@ -283,8 +299,8 @@ func (r *receiver) trVerified(ok bool) {
 	if !ok {
 		return
 	}
-	st.verified[r.tr.cur] = true
-	if t := st.topOf[r.tr.cur]; st.state[t] == "part" && st.topVerified(t) {
+	st.verified[i] = true
+	if t := st.topOf[i]; st.state[t] == "part" && st.topVerified(t) {
 		st.state[t] = "ok"
 		r.line("Verify", t)
 	}
@@ -331,9 +347,126 @@ func (r *receiver) trCutPending() {
 }
 
 // trCut: the session ended inside a file (Resume Cut).
-func (r *receiver) trCut() {
-	if r.tr.st != nil && r.tr.st.files[r.tr.cur] != nil {
-		r.tr.st.emit(r.tr.st.files[r.tr.cur].f, map[string]any{"ev": "Cut"})
+func (r *receiver) trCut(s *sess) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tr.st != nil && r.tr.single && r.tr.st.files[s.tr.cur] != nil {
+		r.tr.st.emit(r.tr.st.files[s.tr.cur].f, map[string]any{"ev": "Cut"})
+	}
+}
+
+// Stripe.tla's lines, one file per non-empty entry of a stage's
+// generation (<name>-s<entry>.ndjson, spec/TraceStripe.tla): Start (a
+// receive's pool there: the chunks not verifying on disk), Open (a
+// session k's set there), Send and Bad (Read: a chunk written, refused),
+// Cut and Close (a session ended before its set there was read: died, or
+// closed by the receiver) and Finish (the commit). Chunks are 1-based.
+
+// stripeLine writes ev of session s's entry (r.mu held), while its set
+// there is being read; an ev that ends it (its last chunk, Bad) ends it.
+func (r *receiver) stripeLine(s *sess, ev string, i int64) {
+	st := r.tr.st
+	if st == nil || !s.tr.open[s.tr.cur] {
+		return
+	}
+	f := st.stripes[s.tr.cur]
+	if f == nil {
+		return
+	}
+	st.emit(f, map[string]any{"ev": ev, "k": s.slot, "i": i})
+	if ev == "Bad" {
+		s.tr.open[s.tr.cur] = false
+		return
+	}
+	last := int64(0)
+	for _, p := range s.set {
+		if p.i == s.tr.cur {
+			last = p.r[1]
+		}
+	}
+	if i == last {
+		s.tr.open[s.tr.cur] = false
+	}
+}
+
+func chunkList(ps []piece, i int) []int64 {
+	out := []int64{}
+	for _, p := range ps {
+		for c := p.r[0]; p.i == i && c < p.r[1]; c++ {
+			out = append(out, c+1)
+		}
+	}
+	return out
+}
+
+// trPool: a receive starts on the stage with pool, k sessions at most.
+func (r *receiver) trPool(pool []piece, k int) {
+	r.tr.single = k == 1
+	st := r.tr.st
+	if st == nil {
+		return
+	}
+	for i, e := range r.m.Entries {
+		if e.Dir || e.Size == 0 {
+			continue
+		}
+		f := st.stripes[i]
+		if f == nil {
+			var err error
+			if f, err = os.Create(fmt.Sprintf("%s-s%d.ndjson", st.name, i)); err != nil {
+				panic(err)
+			}
+			st.stripes[i] = f
+			st.emit(f, map[string]any{"ev": "Init", "n": chunks(e.Size)})
+		}
+		st.emit(f, map[string]any{"ev": "Start", "pool": chunkList(pool, i)})
+	}
+}
+
+// trSet: session s opens with its set (Open, per entry it holds chunks of).
+func (r *receiver) trSet(s *sess) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s.tr.open = map[int]bool{}
+	st := r.tr.st
+	if st == nil {
+		return
+	}
+	for i, f := range st.stripes {
+		if set := chunkList(s.set, i); len(set) > 0 {
+			s.tr.open[i] = true
+			st.emit(f, map[string]any{"ev": "Open", "k": s.slot, "set": set})
+		}
+	}
+}
+
+// trDone: session s ended (err nil: its set in); each entry whose set it
+// had not read is Cut, or Close when the receiver closed it.
+func (r *receiver) trDone(s *sess, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.tr.st
+	if st == nil || err == nil {
+		return
+	}
+	ev := "Cut"
+	if s.closing {
+		ev = "Close"
+	}
+	for i, open := range s.tr.open {
+		if open {
+			st.emit(st.stripes[i], map[string]any{"ev": ev, "k": s.slot})
+			s.tr.open[i] = false
+		}
+	}
+}
+
+// trFinish: the offer committed (Stripe Finish, every file).
+func (r *receiver) trFinish() {
+	if st := r.tr.st; st != nil {
+		for _, f := range st.stripes {
+			st.emit(f, map[string]any{"ev": "Finish"})
+		}
 	}
 }
 

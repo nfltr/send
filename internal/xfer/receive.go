@@ -458,12 +458,10 @@ func (r *receiver) read(s *sess) error {
 		next  int           // entries before it are done
 		files int
 	)
-	r.trSession(s, true)
 	defer func() {
 		if f != nil {
 			r.trCut(s)
 		}
-		r.trSession(s, false)
 	}()
 	fail := func(format string, args ...any) error {
 		if f != nil {

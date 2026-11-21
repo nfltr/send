@@ -36,13 +36,14 @@ spec-traces:
 # docs/decisions/send-line-rate-2026-11-21.md): old and new interleaved.
 BENCH_OUT ?= $${TMPDIR:-/tmp}/bench-line
 # BENCH_K: the receive's --connections, one sub-benchmark (k=<n>) each,
-# interleaved within every run.
+# in turn in each of the 6 runs (interleaved; a CPU profile per run).
 BENCH_K ?= 1,2,4
 bench-line:
 	mkdir -p $(BENCH_OUT)
 	go test -c -o $(BENCH_OUT)/send.test ./cmd/nfltr-send
-	cd $(BENCH_OUT) && ./send.test -test.run '^$$' -test.bench BenchmarkDirectCPU -test.benchtime 1x -test.count 6 \
-		-test.cpuprofile cpu.prof -transfer-mb 2048 -bench-k $(BENCH_K) >bench.txt; s=$$?; cat bench.txt; exit $$s
+	cd $(BENCH_OUT) && : >bench.txt && for i in 1 2 3 4 5 6; do \
+		./send.test -test.run '^$$' -test.bench BenchmarkDirectCPU -test.benchtime 1x -test.count 1 \
+		-test.cpuprofile cpu-$$i.prof -transfer-mb 2048 -bench-k $(BENCH_K) >>bench.txt || { cat bench.txt; exit 1; }; done; cat bench.txt
 
 # make bench-ab AB='base= ps=github.com/nfltr/link/pathswitch@v0.1.4': the
 # CPU benchmarks (direct and relayed) of builds differing only in their
