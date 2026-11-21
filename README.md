@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" width="96" alt="nfltr"></p>
+
 # nfltr-send
 
 Send files and directories between two machines, end to end encrypted:
@@ -135,7 +137,7 @@ What every 1.x release keeps (commands, flags, environment, exit codes,
 the address, compatibility): [docs/v1-contract.md](docs/v1-contract.md).
 
 `send`: `--once` (exit after the first complete transfer), `--direct
-on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http`,
+on|off`, `--machine-credential <file>`, `--relay <address>`, `--relay-http <address>`,
 `--cert-sha256 <sha256>` (a private relay's certificate).
 The relay is `--relay`, else `$NFLTR_SEND_RELAY`, else the one `nfltr config
 set-relay` saved (with its HTTPS URL and certificate pin; nothing of an
