@@ -190,8 +190,8 @@ files, two faults: 128 states. Not traced (both processes; see "Traces").
 
 `Stripe.tla` models one file of a transfer striped across up to K
 sessions at once, each on a QUIC connection of its own (lane SPEED, the
-design in nfltr `docs/decisions/send-line-rate-2026-11-21.md`; not yet
-code: the receiver today opens one session). The receiver holds the chunks
+design in nfltr `docs/decisions/send-line-rate-2026-11-21.md`; the code,
+protocol version 5, lane SPEED-MULTI: `internal/xfer/stripe.go`). The receiver holds the chunks
 still to fetch (`pool`); a session opens with a want naming a set of them,
 taken out of the pool at once (`Open`); the first session's tree frames
 give it the file's tree (`Tree`). The sender sends the set's chunks in
@@ -237,13 +237,26 @@ sessions, W = 2, two faults: 24313 states (6 s); C = 4, K = 3: 832844 states (2 
 | `accept-unverified` | a chunk written without verifying it at its offset | `Right` |
 | `commit-early` | commit once the pool is empty while a session is still open | `Safe` |
 
-Trace recorder (to land with the code, lane SPEED-MULTI): the receiver's
-lines in `internal/xfer/trace_on.go` gain the session (`k`) on `Open`
-(with its set), `Send`, `Bad`, `Cut` (`Die` then `Notice`; `Close` when
-the receiver ended it) and `Finish`, checked by a `TraceStripe.tla` in
-`spec/traces.sh` as `TraceResume.tla` is, with a mutant trace per
-invariant; the sessions are goroutines of one receive, their lines
-written under the recorder's mutex, so one file is a linearization.
+Trace recorder (lane SPEED-MULTI): `internal/xfer/trace_on.go` writes,
+per non-empty file of a stage's generation, `<stage>-s<entry>.ndjson`:
+`Start` (a receive's pool there: the chunks that do not verify on disk),
+`Open` (session `k`'s set), `Send` and `Bad` (`Read` of a chunk written,
+refused), `Cut` (`Die` then `Notice`), `Close` and `Finish`; the sessions
+are goroutines of one receive, their lines written under the receive's
+mutex in the order the receiver acted (a session's end is recorded by the
+coordinator before the next `Open`), so one file is a linearization.
+`TraceStripe.tla` checks each (`spec/traces.sh`): the sender's `Send`,
+`Corrupt`, `Die` and a `Crash` are hidden steps taken only towards the
+next line. The mutant traces in `traces/`, each rejected: `out-of-order`
+(a chunk written at an offset its set does not say comes next: `Right`),
+`refetch-written` (a written chunk asked again: `Once`), `steal-live` (a
+live session's chunk in another's set: `Accounted`), `resume-trust-log`
+(a restart pool missing a chunk the disk lost: `Accounted`),
+`commit-early` (`Safe`), `unknown-step`. `Bounded` (the stream window) is
+the sender's and QUIC's: no receiver line shows it, so no trace fixture;
+the model's `no-window` mutant covers it. A receive of one session also
+writes Resume.tla's per-file lines (`TraceResume.tla`); a striped one
+writes only Stripe's (its sessions' chunks of a file interleave).
 
 ## Environment assumptions
 
@@ -252,7 +265,7 @@ written under the recorder's mutex, so one file is a linearization.
 | a session's Close writes every byte written before it, then its end, before its nf1 data connection ends; the relay passes a session's bytes and its end on in order (End.tla `Close`) | github.com/nfltr/relay `client/nfnet` `dropMux` since client v0.23.6 (link `Mux.Drain`: the connection closes with every frame written), `TestNF1CloseKeepsWhatWasWritten`; `cmd/nfltr-send` `TestOnceRelayedSenderReadsTheAnswer` through relay-core |
 | the session delivers the sender's bytes in order, unaltered, or ends (it never delivers other bytes) | TLS 1.3 records: AEAD with a per-record sequence nonce (RFC 8446 section 5.3), end to end inside the nf1 session (github.com/nfltr/relay `client/nf1`) |
 | a session's end can look clean (EOF) at any record boundary | crypto/tls returns io.EOF on a close without close_notify at a record boundary (Go `crypto/tls` conn.go); RFC 8446 section 6.1 truncation |
-| the sender's file may change at any time (`Change`); the offer does not: the manifest carries each file's BLAKE3 root from when it was offered and the receiver verifies against that root only (the tree the session carries is checked against it, never trusted on its own). The sender also ends a session (`ErrChanged`) when the size or mtime changed | `internal/xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `internal/xfer/receive.go` `run`, `verify` |
+| the sender's file may change at any time (`Change`); the offer does not: the manifest carries each file's BLAKE3 root from when it was offered and the receiver verifies against that root only (the tree the session carries is checked against it, never trusted on its own). The sender also ends a session (`ErrChanged`) when the size or mtime changed | `internal/xfer/send.go` `NewSource`, `sendFile`, `unchanged`; `internal/xfer/receive.go` `read`, `verify` |
 | a receiver crash keeps some prefix of what it wrote, possibly with a torn last chunk | POSIX write(2): no ordering or atomicity of unsynced writes across a crash |
 | BLAKE3 is collision resistant and its tree binds every chunk and its position to the root, so a chunk that verifies at an offset is the offered file's chunk there (the model compares the chunks themselves); the tree's length is the manifest's size | the BLAKE3 paper (2020), section 7 (security); the Bao spec (verified streaming, outboard encoding); `internal/xfer/verified` over `github.com/nfltr/blake3/bao` (lukechampine.com/blake3 with arm64 NEON) |
 | SHA-256 is collision resistant (the manifest's digest names the stage and the intent record) | FIPS 180-4 |
@@ -260,14 +273,14 @@ written under the recorder's mutex, so one file is a linearization.
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `internal/xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `internal/xfer/rename_*.go` |
 | a write to a file changes its size or its mtime (both checks of a file, the per-file ones and the rechecks before the done frame and the commit, compare size and mtime, not the bytes); a write that restores both is caught only while the file is sent (the receiver verifies each chunk) | stat(2) st_mtim (POSIX: a write marks it for update); `internal/xfer/send.go` `unchanged`, `recheck`; `internal/xfer/receive.go` `verify`, `recheck` |
-| Stripe.tla: the K sessions of one receive are independent byte streams (one QUIC connection each, or streams of one connection: the model does not care which); a session delivers its sender's bytes in order or ends; an end before its set is read, clean or not, is a death (`Die`: the receiver counts a set done only once it read every chunk of it, as Resume.tla's `commit-cut`); a session holds at most its stream window unread | RFC 9000 sections 2.2 (a stream's bytes in order), 4.1 (stream flow control); TLS 1.3 records as above; `internal/xfer/receive.go` `run` (a short file is `io.ErrUnexpectedEOF`) |
+| Stripe.tla: the K sessions of one receive are independent byte streams (one QUIC connection each, or streams of one connection: the model does not care which); a session delivers its sender's bytes in order or ends; an end before its set is read, clean or not, is a death (`Die`: the receiver counts a set done only once it read every chunk of it, as Resume.tla's `commit-cut`); a session holds at most its stream window unread | RFC 9000 sections 2.2 (a stream's bytes in order), 4.1 (stream flow control); TLS 1.3 records as above; `internal/xfer/receive.go` `read` (a short file is `io.ErrUnexpectedEOF`) |
 
 ## Code map
 
 | spec | code |
 |---|---|
 | `Open` (the part verified with its kept tree, the chunks asked for) | `internal/xfer/receive.go` `parts`, `runs`, `keptTree`, `open`; `internal/xfer/xfer.go` `need`, `validRuns`; `internal/xfer/send.go` `sendFile`; `internal/xfer/verified` `Good` |
-| `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `internal/xfer/send.go` `sendFile`; `internal/xfer/receive.go` `run` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `internal/xfer/verified` `Chunk` |
+| `Send`, `Bad` (a chunk verified on arrival, written in order, or refused) | `internal/xfer/send.go` `sendFile`; `internal/xfer/receive.go` `read` (frameTree, frameData, `keep`, `inFlight`, `ErrUnverified`); `internal/xfer/verified` `Chunk` |
 | `Finish` (every chunk on disk verified, kept on mismatch) | `internal/xfer/receive.go` `verify`, `commit`; `internal/xfer/verified` `Verify` |
 | `Cut`, `Crash` | `internal/xfer/receive.go` `Receive` (a cut leaves the stage); `cmd/nfltr-send` `receiveCmd` (the next session); `Crash` to an empty part is also the stage's removal: an abandoned one's (`sweep`, `StageLife`) |
 | `Rot` | the disk; `internal/xfer/receive.go` `verify` (in a session), `parts` (between sessions) |
@@ -278,9 +291,9 @@ written under the recorder's mutex, so one file is a linearization.
 | `Commit.tla` `Expire` (and `Open` by the sweep) | `internal/xfer/receive.go` `sweep`, `finishStage` (with its intent: `commit`, as a recovery) |
 | `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `internal/xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `internal/xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
 | `End.tla` `Read` | `internal/xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
-| `Offer.tla` `SendFile`, `Done` (the sender's checks), `Commit` (the receiver's recheck) | `internal/xfer/send.go` `Serve`, `sendFile`, `unchanged`, `recheck`; `internal/xfer/receive.go` `run`, `verify`, `recheck`, `commit` |
-| `Stripe.tla` (a design: the code lands with lane SPEED-MULTI) | `cmd/nfltr-send` `receiveTo` (K sessions of one receive); `internal/xfer/receive.go` `run`, `need` (a session's set, its pool); `internal/xfer/send.go` `Serve`, `sendFile` (a want's set, sent in index order) |
-| `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `internal/xfer/trace_on.go` (the recorder), `internal/xfer/trace_off.go`; the call sites in `internal/xfer/receive.go` (behind `traceOn`) |
+| `Offer.tla` `SendFile`, `Done` (the sender's checks), `Commit` (the receiver's recheck) | `internal/xfer/send.go` `Serve`, `sendFile`, `unchanged`, `recheck`; `internal/xfer/receive.go` `read`, `verify`, `recheck`, `commit` |
+| `Stripe.tla` | `cmd/nfltr-send` `receiveOnce`, `dialers` (K sessions of one receive, a Dialer each); `internal/xfer/stripe.go` (`ReceiveFrom`, `stripe`: the pool, the sets, a session's rest, the slow tail, the one commit); `internal/xfer/receive.go` `read` (a session's set, written in order), `need`; `internal/xfer/send.go` `Serve`, `sendFile` (a want's set, sent in index order) |
+| `TraceCommit.tla`, `TraceResume.tla`, `TraceStripe.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `internal/xfer/trace_on.go` (the recorder), `internal/xfer/trace_off.go`; the call sites in `internal/xfer/receive.go` (behind `traceOn`) |
 
 ## Traces
 
@@ -304,13 +317,13 @@ constant `traceOn`: no code in a release binary. 111 traces, about 10 s.
 |---|---|
 | Commit `Init` {n} (`newReceiver` makes the stage) | the model's constants: N tops; P the receivers named |
 | `Open` {p, rec} / `Busy` / `Taken` (`newReceiver`, the lock taken or not, under the recorder's mutex) | `Open(p)`; Busy and Taken a stutter step whose model reason holds (the lock held or the stage just finished; a name taken) |
-| `Write` {t}, `Verify` {t} (`run`: a top's first file started; its last file verified; at `commit`, a top holding no file) | `Write`, `Verify` |
+| `Write` {t}, `Verify` {t} (`read`: a top's first file started; its last file verified; at `commit`, a top holding no file) | `Write`, `Verify` |
 | `Begin`, `BeginRefused` (`commit`: the intent synced; a name taken) | `Begin` |
 | `Rename` {t}, `RenameRefused` {t}, `Stop` (`commit`, per top in order; a receiver that died in its commit: `end`) | `Rename`, `Stop` |
 | `Finish` (before the stage's removal under its lock), `Cut` (`end`: the lock released before the commit) | `Finish`, `Cut` |
 | `Expire` (`finishStage`: a stale stage without its intent) | `Expire`; of a stage holding nothing, a stutter |
 | Resume `Init` {n} | N: the file's length in chunks of `maxData` bytes |
-| `Open` {part, off} (`run`, a start frame: the part on disk before the cut to the offset, as chunk digests; the offset in chunks) | `Open`; once verified, `Served` |
+| `Open` {part, off} (`read`, a start frame: the part on disk before the cut to the offset, as chunk digests; the offset in chunks) | `Open`; once verified, `Served` |
 | `Send` {i, v} (a chunk verified and complete on disk), `Bad` {i, v} (a chunk that did not verify), `Finish` {ok} (`verify` when it fails; when it verifies, at the commit's `recheck`, failed for the file it refuses: Resume's Finish commits, the offer only after its recheck, Offer.tla), `Cut` (the session ended inside the file, or after a file it verified and before the recheck) | `Send`, `Bad`, `Finish` (a refused recheck after a hidden `Rot`), `Cut` |
 | hidden | Commit `Foreign`, `Replace` (someone else's names); Resume `Rot`, `Crash`, `Change` (taken only towards the next line); the offer one whose chunk at each position was taken there, the sender's file `src` one whose chunk at each position was taken or refused there |
 

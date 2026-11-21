@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **One transfer over several connections** (protocol version 5): the
+  receiver opens up to `--connections` sessions at once (default 4), each
+  on a connection of its own, so each one's packets have a core at both
+  ends. Each session's want names a set of the chunks still to fetch
+  (interleaved 64 MiB runs); the sender sends that set in order, the
+  receiver verifies and writes each chunk in place. A session that ends
+  early (its connection cut, a chunk that does not verify) puts what it
+  did not write back for another session; the slowest session is closed
+  and its rest split once the others are done; one commit after the last
+  session and the final check. Every session but the last is answered
+  `part` (a `--once` sender serves on). A transfer of fewer 64 MiB runs
+  than `--connections` takes one session per run (`spec/Stripe.tla`,
+  checked before the code; its traces by `spec/TraceStripe.tla`).
+- **Hard cut**: a v0.1 end (protocol 4) and this one refuse each other at
+  once, with an answer naming both versions: a receiver exits 4 (refused),
+  a v0.1 receiver exits 6 (protocol error), neither retries.
+
 ## v0.1.11
 
 - **Direct transfers are faster on fast links, for less CPU.** Between

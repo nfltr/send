@@ -533,6 +533,38 @@ direct, 3.26 against 3.74 relayed), so the two pairs differ by about
   packing alternate rather than overlap) and half for its congestion
   window. Concurrent transfers still add up.
 
+- **One transfer over several connections** (protocol 5, unreleased,
+  lane SPEED-MULTI): the receive is striped over `--connections` sessions,
+  each on a QUIC connection and socket of its own, so the pipeline above
+  runs once per connection. On the second pair (v0.1.10 run in turn on
+  the same machines, 3 runs each, medians, BLAKE3 equal in all 22 runs):
+
+  | 10 GiB direct | Gbit/s | CPU s per GiB, sender / receiver |
+  |---|---|---|
+  | v0.1.10 | 1.51 | 10.7 / 10.1 |
+  | `--connections 1` | 2.63 | 7.0 / 8.4 |
+  | `--connections 2` | 4.26 | 7.1 / 9.6 |
+  | `--connections 4` | 5.39 | 7.1 / 9.1 |
+  | `--connections 8` | 5.24 | 7.2 / 9.5 |
+
+  100 GiB at 4 connections ran at 4.95 Gbit/s; relayed 10 GiB at 4
+  connections at 4.50 (3.27 at one). The receiver is then the limit: 7.0
+  of its 8 vCPUs busy (it verifies each chunk on arrival and hashes the
+  whole file again before the commit; its writers share one file lock),
+  the sender 3.4. On the build
+  box, both ends in one process on 3 cores (`make bench-line`, 2 GiB, 6
+  interleaved rounds, medians):
+
+  | `--connections` | Mbit/s | CPU s per GiB, both ends |
+  |---|---|---|
+  | 1 | 2534 | 7.9 |
+  | 2 | 2860 | 8.2 |
+  | 4 | 2938 | 8.0 |
+
+  There the 3 cores are the cap (3 / 8 CPU s per GiB is about 3.2
+  Gbit/s), so the rows show the cost per byte stays flat with K, not the
+  gain; the gain needs two machines like L and M.
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are

@@ -163,7 +163,7 @@ retrying. `make cross-version`
 `make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
 signature and sum verified) against this checkout both ways on a private
-relay. Both ends need a relay that serves nf1 addresses (nfltr-relay
+relay and requires those two refusals. Both ends need a relay that serves nf1 addresses (nfltr-relay
 `NF1_ENABLED`; `NF1_ANON_ENABLED` for senders with no account).
 
 Release files: `nfltr-send_<os>_<arch>` (`.exe` on Windows) for linux,

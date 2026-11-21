@@ -17,7 +17,8 @@ file, head -c syntax, default 4G), REL_SMALL (the small files' count, default
 10000), REL_SOAK_S (soak seconds, default 86400), REL_SEED (soak, default the
 start time), REL_UID (owner of REL_OUT's files at the end), REL_SEND_S and REL_SEND_R (the
 sender's and the receiver's nfltr-send in REL_BIN, default nfltr-send: two
-versions, cross.sh)."""
+versions, cross.sh), REL_EXPECT (every cell's expected receiver exit code,
+nothing committed unless 0: cross.sh's refusals)."""
 import json, os, random, re, signal, statistics, subprocess as sp, sys, time, hashlib
 
 B = os.environ.get("REL_BIN", "/bin-in")
@@ -335,7 +336,7 @@ def run_cell(c, logdir):
         js = r.rjson()
         row.update(rc=rc, seconds=round(secs, 3), paths=js.get("paths"), sessions=js.get("sessions"),
                    written=js.get("written"), first_byte_seconds=js.get("first_byte_seconds"), code=js.get("code"))
-        want = c.get("expect", 0)
+        want = int(os.environ.get("REL_EXPECT", c.get("expect", 0)))
         bad, diff = judge(to, src, want == 0 and rc == 0)
         if bad:  # corrupt or missing: a byte wrong, missing or extra in what the receiver committed
             keep_tree(to, logdir)

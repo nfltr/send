@@ -58,6 +58,7 @@ type fileTrace struct {
 	f    *os.File
 	done bool // verified: Resume's committed
 	pend bool // verified in this session, its Finish written at the commit's recheck
+	open bool // opened in this session, not yet verified: a Cut if it ends first
 }
 
 type recvTrace struct {
@@ -251,6 +252,7 @@ func (r *receiver) trStart(s *sess, i int, todo [][2]int64) {
 		}
 	}
 	st.emit(ft.f, map[string]any{"ev": "Open", "part": part, "need": asked})
+	ft.open = true
 }
 
 // trData: a chunk verified and written at off (Resume Send).
@@ -290,6 +292,7 @@ func (r *receiver) trVerified(i int, ok bool) {
 		return
 	}
 	if ft := st.files[i]; ft != nil {
+		ft.open = false
 		if ok {
 			ft.pend = true
 		} else {
@@ -332,16 +335,16 @@ func (r *receiver) trRechecked(bad int) {
 	}
 }
 
-// trCutPending: the session ended before the commit's recheck: each file
-// verified in it takes a Cut (its part stays, verified again next session).
+// trCutPending: the receive ended before the commit's recheck: each file
+// verified in it, or received whole but not yet verified, takes a Cut (its part stays, verified again next session).
 func (r *receiver) trCutPending() {
 	if r.tr.st == nil {
 		return
 	}
 	for _, ft := range r.tr.st.files {
-		if ft.pend {
+		if ft.pend || ft.open { // verified, or received whole, before the final check
 			r.tr.st.emit(ft.f, map[string]any{"ev": "Cut"})
-			ft.pend = false
+			ft.pend, ft.open = false, false
 		}
 	}
 }
@@ -352,6 +355,7 @@ func (r *receiver) trCut(s *sess) {
 	defer r.mu.Unlock()
 	if r.tr.st != nil && r.tr.single && r.tr.st.files[s.tr.cur] != nil {
 		r.tr.st.emit(r.tr.st.files[s.tr.cur].f, map[string]any{"ev": "Cut"})
+		r.tr.st.files[s.tr.cur].open = false
 	}
 }
 
