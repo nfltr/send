@@ -304,15 +304,22 @@ func tail(active map[*sess]bool) {
 	}
 }
 
-// final verifies every file from disk (spec Finish), commits and answers
-// on s, the transfer's last session.
+// final verifies from disk every file this receive did not verify and
+// write whole (spec Finish, Trusted), commits and answers on s, the
+// transfer's last session.
 func (r *receiver) final(s *sess, end func(Session) error) (Answer, error) {
 	var a Answer
 	for i, e := range r.m.Entries {
 		if e.Dir {
 			continue
 		}
-		err := r.verify(i, verified.Tree{Root: root(e), Size: e.Size, Outboard: r.tree(i)})
+		var err error
+		// A file received whole is not read back: about 1 CPU s per GiB
+		// (nfltr docs/performance-ledger.md, lane SPEED-RECV; guard
+		// TestFreshFileIsTrustedAndATouchAfterItRefuses).
+		if !r.trusted(i) {
+			err = r.verify(i, verified.Tree{Root: root(e), Size: e.Size, Outboard: r.tree(i)})
+		}
 		r.trVerified(i, err == nil)
 		if err != nil {
 			_ = s.s.Close()

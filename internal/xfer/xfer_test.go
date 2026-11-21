@@ -291,33 +291,72 @@ func TestWrongRootCommitsNothing(t *testing.T) {
 	}
 }
 
-// A chunk that lands wrong on the receiver's disk after it verified is
-// caught by the file's BLAKE3 over what is on disk: nothing is committed,
-// the file is kept and the next session sends that chunk only (spec
-// Finish, mutant no-final-check).
-func TestChunkThatLandedWrongIsCaught(t *testing.T) {
-	src := tree(t, 2<<20)
+// A chunk kept from an earlier session that rots while the next session
+// fetches the rest is caught by the final check, which reads back a file
+// this receive did not write whole: nothing is committed, the file is kept
+// and the next session sends that chunk only (spec Stripe.tla Rot,
+// mutant trust-resumed; Resume.tla mutant no-final-check).
+func TestKeptChunkThatRotsIsCaught(t *testing.T) {
+	src := tree(t, 8*maxData)
 	s, err := NewSource([]string{src})
 	must(t, err)
 	dst := t.TempDir()
-	var stage string
+	_, _ = session(t, s, dst, 3*maxData) // chunk 0 kept
+	var rotted bool
 	afterWrite = func(f *os.File, off int64) {
-		if off == maxData { // the second chunk lands wrong
-			_, _ = f.WriteAt([]byte{0xff, 0xfe}, off+7)
-			stage = filepath.Dir(filepath.Dir(f.Name()))
+		if !rotted { // chunk 0, kept, rots once the next session writes
+			rotted = true
+			_, _ = f.WriteAt([]byte{0xff, 0xfe}, 7)
 		}
 	}
 	_, rr := session(t, s, dst, 0)
 	afterWrite = nil
-	if !errors.Is(rr.err, ErrUnverified) || rr.a.OK {
+	if !rotted || !errors.Is(rr.err, ErrUnverified) || rr.a.OK {
 		t.Fatalf("receiver %+v: want ErrUnverified", rr)
 	}
-	if fi, err := os.Stat(filepath.Join(stage, "data", "big.bin")); err != nil || fi.Size() != 2<<20 {
-		t.Fatalf("part %v, %v: want the whole file kept", fi, err)
-	}
-	sr, rr := session(t, s, dst, 0) // the small file landed before the final check: kept
+	sr, rr := session(t, s, dst, 0)
 	if rr.err != nil || !rr.a.OK || sr.sent != maxData {
 		t.Fatalf("resumed: sender %+v, receiver %+v", sr, rr)
+	}
+	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
+		t.Fatal("differs from the source")
+	}
+}
+
+// A file this receive verified and wrote whole is not read back before the
+// commit (spec Stripe.tla Trusted; nfltr
+// docs/decisions/send-line-rate-2026-11-21.md "Step 6"); another program's
+// write once it is complete changes its mtime and refuses the commit, the
+// stage kept, and the next session sends what no longer verifies (spec
+// Stripe.tla Touch, mutant no-recheck).
+func TestFreshFileIsTrustedAndATouchAfterItRefuses(t *testing.T) {
+	src := tree(t, 8*maxData)
+	s, err := NewSource([]string{src})
+	must(t, err)
+	dst := t.TempDir()
+	var read []string
+	readBack = func(name string) { read = append(read, name) }
+	_, rr := session(t, s, dst, 0)
+	readBack = nil
+	if rr.err != nil || !rr.a.OK || len(read) != 0 {
+		t.Fatalf("receiver %+v, read back %q: want none", rr, read)
+	}
+	dst = t.TempDir()
+	afterWrite = func(f *os.File, off int64) {
+		if off == 7*maxData { // the last chunk: the file is complete
+			_, _ = f.WriteAt([]byte("another program"), 5)
+			later := time.Now().Add(time.Hour)
+			must(t, os.Chtimes(f.Name(), later, later))
+		}
+	}
+	_, rr = session(t, s, dst, 0)
+	afterWrite = nil
+	if rr.a.OK || !strings.Contains(rr.a.Message, ErrUnverified.Error()) {
+		t.Fatalf("receiver %+v: want the commit refused, ErrUnverified", rr)
+	}
+	sr, rr := session(t, s, dst, 0)
+	if rr.err != nil || !rr.a.OK || sr.sent != maxData {
+		t.Fatalf("next session: sender %+v, receiver %+v", sr, rr)
 	}
 	if digest(t, src) != digest(t, filepath.Join(dst, "data")) {
 		t.Fatal("differs from the source")

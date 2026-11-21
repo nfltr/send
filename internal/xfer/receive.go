@@ -151,8 +151,9 @@ type receiver struct {
 	seen      map[int]int64 // file entry -> its staged file's mtime when verified (recheck)
 	tr        recvTrace
 
-	mu       sync.Mutex     // the sessions': trees, progress, the trace
+	mu       sync.Mutex     // the sessions': trees, fresh, progress, the trace
 	trees    map[int][]byte // entry -> its tree, once a session read it whole
+	fresh    map[int]*fresh // entry -> its chunks this receive verified and wrote
 	written  int64          // file bytes written by this receive
 	progress Progress
 }
@@ -485,6 +486,11 @@ func (r *receiver) read(s *sess) error {
 			f = nil
 			return err
 		}
+		if err := r.wroteChunk(cur, pd.off/maxData, f); err != nil {
+			_ = f.Close()
+			f = nil
+			return err
+		}
 		if afterWrite != nil {
 			afterWrite(f, pd.off)
 		}
@@ -522,7 +528,7 @@ func (r *receiver) read(s *sess) error {
 			}
 			todo = need(have, chunks(e.Size))
 			r.trStart(s, st.Index, todo)
-			if f, err = r.open(e, st.Kept); err != nil {
+			if f, err = r.open(st.Index, st.Kept); err != nil {
 				return err
 			}
 			cur, left, off, got, wrote = st.Index, 0, 0, 0, false
@@ -630,11 +636,16 @@ type pending struct {
 // wrong).
 var afterWrite func(f *os.File, off int64)
 
-// open opens entry e's part, its directories made: emptied when the sender keeps none of it,
-// else cut to the file's size (its chunks are written in place).
-func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
+// readBack, when set, runs as a file is read back to be verified (a test
+// counts them).
+var readBack func(name string)
+
+// open opens entry i's part, its directories made: emptied when the sender keeps none of it
+// (none of it fresh then), else cut to the file's size (its chunks are written in place).
+func (r *receiver) open(i int, kept bool) (*os.File, error) {
 	r.mu.Lock() // the sessions': os.Root's MkdirAll is not safe against another at once
 	defer r.mu.Unlock()
+	e := r.m.Entries[i]
 	if d := path.Dir(e.Path); d != "." {
 		if err := r.sr.MkdirAll(d, 0o755); err != nil {
 			return nil, err
@@ -648,6 +659,7 @@ func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
 	switch {
 	case err != nil:
 	case !kept:
+		delete(r.fresh, i)
 		err = f.Truncate(0)
 	case fi.Size() > e.Size:
 		err = f.Truncate(e.Size)
@@ -659,6 +671,65 @@ func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
 	return f, nil
 }
 
+// fresh is a file's chunks this receive verified on arrival and wrote
+// (spec Stripe.tla fresh), each counted once; mtime is the file's after
+// the last of them, once every chunk is (whole).
+type fresh struct {
+	got   []bool
+	n     int64
+	whole bool
+	mtime int64
+}
+
+// wroteChunk counts chunk c of entry i, verified and written through f.
+// The writer of a file's last chunk takes its mtime then: every write of
+// this receive to it happened before (each counted after its write), so a
+// later change of it is another program's, refused by the commit's recheck
+// (spec Stripe.tla Touch).
+func (r *receiver) wroteChunk(i int, c int64, f *os.File) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fr := r.fresh[i]
+	if fr == nil {
+		if r.fresh == nil {
+			r.fresh = map[int]*fresh{}
+		}
+		fr = &fresh{got: make([]bool, chunks(r.m.Entries[i].Size))}
+		r.fresh[i] = fr
+	}
+	if fr.got[c] {
+		return nil
+	}
+	fr.got[c] = true
+	if fr.n++; fr.n < int64(len(fr.got)) {
+		return nil
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	fr.whole, fr.mtime = true, fi.ModTime().UnixNano()
+	return nil
+}
+
+// trusted reports whether this receive verified on arrival and wrote every
+// chunk of entry i; if so it keeps the file's mtime then for the commit's
+// recheck, and nothing of it is read back (spec Stripe.tla Trusted;
+// nfltr docs/decisions/send-line-rate-2026-11-21.md "Step 6").
+func (r *receiver) trusted(i int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fr := r.fresh[i]
+	if fr == nil || !fr.whole {
+		return false
+	}
+	if r.seen == nil {
+		r.seen = map[int]int64{}
+	}
+	r.seen[i] = fr.mtime
+	return true
+}
+
 // verify checks every chunk of what is on disk against the root, in
 // parallel (verified.Verify); a file that does not verify (a chunk that
 // landed wrong) is kept: the next session verifies it again and asks for
@@ -666,6 +737,9 @@ func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
 // before the read for the commit's recheck.
 func (r *receiver) verify(i int, tr verified.Tree) error {
 	e := r.m.Entries[i]
+	if readBack != nil {
+		readBack(e.Path)
+	}
 	f, err := r.sr.Open(e.Path)
 	if err != nil {
 		return err
