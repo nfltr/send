@@ -7,7 +7,7 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: ci check spec spec-traces bench-line release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
+.PHONY: ci check spec spec-traces bench-line bench-ab release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
 # make ci: the check workflow's Linux jobs but cross-version, for a CI runner
 # of our own.
 ci: check spec spec-traces release-dryrun
@@ -40,6 +40,18 @@ bench-line:
 	go test -c -o $(BENCH_OUT)/send.test ./cmd/nfltr-send
 	cd $(BENCH_OUT) && ./send.test -test.run '^$$' -test.bench BenchmarkDirectCPU -test.benchtime 1x -test.count 6 \
 		-test.cpuprofile cpu.prof -transfer-mb 2048 >bench.txt; s=$$?; cat bench.txt; exit $$s
+
+# make bench-ab AB='base= ps=github.com/nfltr/link/pathswitch@v0.1.4': the
+# CPU benchmarks (direct and relayed) of builds differing only in their
+# dependencies, interleaved (bench/cpu/ab.sh; BENCH, RUNS, MB; out in
+# BENCH_OUT). Which dependency bump moved a figure (lane RELAYEDREG: the
+# SPEED-IO bisect ran AB='base= ps=github.com/nfltr/link/pathswitch@v0.1.4
+# fork=github.com/nfltr/quic-go@v0.63.1-nfltr.5
+# both=github.com/nfltr/link/peerlink/quiclink@v0.7.3'). A box TARGET run
+# takes no AB: set it in the requested commit.
+AB ?= base=
+bench-ab:
+	OUT=$(BENCH_OUT) bash bench/cpu/ab.sh $(AB)
 
 # Release files in dist/ (scripts/release.sh): make release builds the six
 # binaries and SHA256SUMS, reproducibly; make release-sign SIGNING_KEY=<key>

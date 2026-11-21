@@ -34,7 +34,14 @@ func cpuTime() time.Duration {
 // bench/cpu/netem.sh runs two builds of it interleaved behind netem (lane
 // SENDCPU), so a CPU difference between builds is measured, not inferred
 // from cloud runs on different machines.
-func BenchmarkDirectCPU(b *testing.B) {
+func BenchmarkDirectCPU(b *testing.B) { benchCPU(b, nfnet.DirectOn) }
+
+// BenchmarkRelayedCPU: BenchmarkDirectCPU through the relay (the sender
+// has the relay's key, the receiver direct off): the relayed path's
+// pathswitch session over the agent link (lane RELAYEDREG).
+func BenchmarkRelayedCPU(b *testing.B) { benchCPU(b, nfnet.DirectOff) }
+
+func benchCPU(b *testing.B, mode nfnet.DirectMode) {
 	dir := filepath.Join(b.TempDir(), "offer")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		b.Fatal(err)
@@ -58,12 +65,16 @@ func BenchmarkDirectCPU(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	cfg := nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}
+	if mode == nfnet.DirectOff {
+		cfg.Token = r.Key
+	}
 	var cpu, wall time.Duration
 	for b.Loop() {
 		c0, w0 := cpuTime(), time.Now()
 		pr, pw := io.Pipe()
 		go func() {
-			serve(b.Context(), nfnet.Config{Relay: "relay.test", AgentRelay: r.GRPC, Plaintext: true}, nfnet.DirectOn, nil, src, true, pw, io.Discard)
+			serve(b.Context(), cfg, nfnet.DirectOn, nil, src, true, pw, io.Discard)
 			_ = pw.Close()
 		}()
 		addr, err := bufio.NewReader(pr).ReadString('\n')
@@ -71,7 +82,7 @@ func BenchmarkDirectCPU(b *testing.B) {
 			b.Fatal(err)
 		}
 		go func() { _, _ = io.Copy(io.Discard, pr) }()
-		if code := receiveFrom(b, r, addr[:len(addr)-1], nfnet.DirectOn, b.TempDir()); code != 0 {
+		if code := receiveFrom(b, r, addr[:len(addr)-1], mode, b.TempDir()); code != 0 {
 			b.Fatalf("receive exit %d", code)
 		}
 		cpu, wall = cpu+cpuTime()-c0, wall+time.Since(w0)
