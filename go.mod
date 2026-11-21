@@ -25,7 +25,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nfltr/link v0.13.3 // indirect
-	github.com/nfltr/link/pathswitch v0.1.3 // indirect
+	github.com/nfltr/link/pathswitch v0.1.4-0.20261121165531-59f3b3286bd8 // indirect
 	github.com/nfltr/link/peerlink/quiclink v0.7.2 // indirect
 	github.com/nfltr/quic-go v0.63.1-nfltr.4 // indirect
 	github.com/nfltr/relay/proto v0.22.1 // indirect
