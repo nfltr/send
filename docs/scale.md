@@ -17,7 +17,9 @@ regions; it adds to the history above and replaces none of it. Test 6,
 on 2026-11-21, is the same release between that provider's machines and
 Google Cloud machines (["Between providers"](#6-between-providers-v019-and-v0110));
 its 10 GiB and 100 GiB runs from Helsinki to Singapore were repeated
-later that day on the v0.1.10 release.
+later that day on the v0.1.10 release. Test 7, the same day, is v0.1.10
+on a fast short link inside one Google Cloud zone
+(["Fast low-latency link"](#7-fast-low-latency-link-l-to-m-one-google-cloud-zone-v0110)).
 
 ## What limited a transfer
 
@@ -458,6 +460,49 @@ resumed files' BLAKE3 equals the sent file's.
 - **CPU, 10 GiB H to J**: the sender used 66 CPU s in 51 s, the receiver
   84 (1.3 and 1.6 of 4 vCPUs).
 
+## 7. Fast low-latency link (L to M, one Google Cloud zone, v0.1.10)
+
+Can one transfer fill a fast, short link? On 2026-11-21 the v0.1.10
+release ran between two Google Cloud n2-standard-8 machines (8 vCPU
+Intel Xeon 2.80 GHz, 32 GB, 16 Gbit/s egress tier) in us-central1-a, over
+their internal addresses, with the files on four local NVMe SSDs in
+RAID 0. The private relay (`nfltr-relay` v2.1.79) ran on the sender, L.
+
+| L to M | |
+|---|---|
+| RTT | 0.20 ms (MTU 1460) |
+| iperf3 TCP, 1 and 4 streams | 15.6 and 15.8 Gbit/s, no retransmits |
+| iperf3 UDP, 4 streams | 0.003 % loss at 6 Gbit/s offered, 0.35 % at 8 |
+| disk (fio, sequential, direct) | write 1.5-1.6 GB/s (12-13 Gbit/s), read 2.9 GB/s |
+
+| run | path | receive s | Gbit/s | CPU s per GiB, sender / receiver | BLAKE3 |
+|---|---|---|---|---|---|
+| 10 GiB (3 runs) | direct | 46.1-48.0 | 1.79-1.86 (median 1.80) | 8.3-8.4 / 9.9-10.0 | equal |
+| 100 GiB | direct | 466.5 (+36.6 to the address) | 1.84 | 8.4 / 10.4 | equal |
+| 10 GiB, `-direct off` at both ends | relayed | 22.95 | 3.74 | 3.7 / 4.2 | equal |
+
+Every direct run took the direct path within its first second (the
+receiver counted every byte in UDP datagrams, no receive-buffer drops)
+and held 1.9-2.1 Gbit/s on the wire to the end.
+
+- **One transfer is capped at about 1.8 Gbit/s, by its own pipeline**:
+  not the link (a tenth of what one TCP stream carries), not the disk,
+  not the machines (1.8 and 2.3 of 8 vCPUs busy, no goroutine at one CPU
+  in the profiles). Concurrent transfers add up: 2.9 Gbit/s for two, 4.3
+  for four, where the receiver's 8 vCPUs fill up. The relayed path moves
+  the same file at twice the rate for less than half the CPU, as in test
+  6 at 6 ms, so the cap is in the direct path's stack (QUIC and the path
+  switch). The sender spends a third of its CPU in `memmove` under the
+  end-to-end TLS conn's writes to the path switch, 10 to 20 times the
+  bytes sent; the switch's send queue moves every unacknowledged byte to
+  the front of its array when it fills, under the lock its write loop
+  and acknowledgements also take. That is the leading suspect; it is
+  open, with the profiles kept beside the evidence.
+- **CPU**: about 8.4 CPU s per GiB at the sender and 10 at the receiver
+  on the direct path (AES-GCM twice per byte, BLAKE3, copies), so all
+  transfers together into one 8-vCPU receiver top out near 4-5 Gbit/s
+  (4.3 measured).
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are
@@ -474,3 +519,5 @@ resumed files' BLAKE3 equals the sent file's.
   2 runs on one pair of machines on one evening.
 - The v0.1.10 rows of test 6 are 2 runs of 10 GiB and one of 100 GiB, on
   one pair of machines in one afternoon.
+- Test 7 is 3 runs of 10 GiB, one of 100 GiB and one relayed 10 GiB, on one
+  pair of machines in one zone in one afternoon; internal addresses only.
