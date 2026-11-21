@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,10 +29,12 @@ import (
 // sender presents it to the relay as its TLS client certificate and renews
 // it while it serves (relay client machinecert.Loop).
 type machine struct {
-	path  string
-	key   *ecdsa.PrivateKey
-	saved savedCert // run's goroutine only, after loadMachine
-	cur   atomic.Pointer[tls.Certificate]
+	path    string
+	key     *ecdsa.PrivateKey
+	mu      sync.Mutex // one renewal at a time (run's, a connection's); holds saved
+	saved   savedCert
+	cur     atomic.Pointer[tls.Certificate]
+	refused atomic.Bool // a renewal was refused for good (revoked, offline past the grace)
 }
 
 // savedCert is machine.json, written back whole on each renewal.
@@ -79,8 +82,23 @@ func loadMachine(path string) (*machine, error) {
 	return m, nil
 }
 
-// cert is the newest certificate (nfnet.Config.ClientCert).
-func (m *machine) cert() (*tls.Certificate, error) { return m.cur.Load(), nil }
+// cert is the newest certificate (nfnet.Config.ClientCert). An expired
+// one (the machine was off) is renewed before a connection presents it:
+// presented expired, the relay refuses the sender for good (lane
+// CERTGAPS, from CERTPROOF2; relay client machinecred does the same).
+// While the relay does not answer the connection fails and is redialed;
+// after a final refusal the expired one is presented, and the relay's
+// refusal ends the command.
+func (m *machine) cert() (*tls.Certificate, error) {
+	t := m.cur.Load()
+	if m.refused.Load() || time.Now().Before(t.Leaf.NotAfter) {
+		return t, nil
+	}
+	if _, err := m.renew(context.Background(), nil); err != nil && !m.refused.Load() {
+		return nil, fmt.Errorf("the machine certificate expired and is renewing (the relay does not answer yet): %w", err)
+	}
+	return m.cur.Load(), nil
+}
 
 // forRelay refuses a relay other than the certificate's (a hosted relay's
 // gRPC host is its HTTP host with "grpc." in front).
@@ -98,21 +116,50 @@ func (m *machine) forRelay(addr string) error {
 // run renews the certificate until ctx ends; a final refusal or an expiry
 // is logged and the relay then refuses the certificate (enrol again).
 func (m *machine) run(ctx context.Context, log *slog.Logger) {
-	c := &machinecert.Client{BaseURL: m.saved.BaseURL, HTTP: &http.Client{Timeout: time.Minute}}
+	m.mu.Lock()
 	cur := m.saved.Cert
+	m.mu.Unlock()
 	err := machinecert.Loop{
-		Renew: func(ctx context.Context, cur *machinecert.Cert) (*machinecert.Cert, error) {
-			return c.Renew(ctx, cur, m.key)
-		},
-		Save: m.save,
+		Renew: m.renew,
+		Save:  func(*machinecert.Cert) error { return nil }, // renew saved it
 	}.Run(ctx, &cur)
 	if err != nil {
 		log.Error("machine certificate not renewed: run `nfltr config login` to enrol this machine again", "error", err)
 	}
 }
 
-// save keeps a renewed certificate in machine.json (replaced whole, 0600)
-// and presents it from the next handshake on.
+// renew renews the certificate once, under mu, and saves it; from is the
+// certificate the caller holds (nil: a connection's, which needs only an
+// unexpired one): a renewal that went through meanwhile is the answer,
+// never a second request (the relay answers 409 renew_too_early). A final
+// refusal marks the certificate refused.
+func (m *machine) renew(ctx context.Context, from *machinecert.Cert) (*machinecert.Cert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if (from != nil && m.saved.NotAfter.After(from.NotAfter)) || (from == nil && time.Now().Before(m.saved.NotAfter)) {
+		saved := m.saved.Cert
+		return &saved, nil
+	}
+	cur := m.saved.Cert
+	next, err := m.client().Renew(ctx, &cur, m.key)
+	if err != nil {
+		var refused *machinecert.RefusedError
+		if errors.As(err, &refused) && refused.Final() {
+			m.refused.Store(true)
+		}
+		return nil, err
+	}
+	return next, m.save(next)
+}
+
+// client renews at the certificate's relay.
+func (m *machine) client() *machinecert.Client {
+	return &machinecert.Client{BaseURL: m.saved.BaseURL, HTTP: &http.Client{Timeout: time.Minute}}
+}
+
+// save (under mu, or before the machine is shared) keeps a renewed
+// certificate in machine.json (replaced whole, 0600) and presents it from
+// the next handshake on.
 func (m *machine) save(c *machinecert.Cert) error {
 	s := m.saved
 	s.Cert = *c

@@ -5,6 +5,10 @@
 From the v1.0 surface review ([docs/v1-surface-review.md](docs/v1-surface-review.md)).
 These change what scripts see; v1.0 keeps them.
 
+- **A sender whose machine was off past its certificate's life serves
+  again**: the expired certificate is renewed before the first connection
+  presents it (before: the relay refused it for good and `send` exited 6).
+  A refused machine's error no longer says `--relay names another`.
 - **receive `--json`: `error` is now `message`, `first_byte_s` is now
   `first_byte_seconds`**, the names nfltr's `cat` events and metrics use.
   A script reading either key reads the new one.
