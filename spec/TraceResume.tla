@@ -56,9 +56,11 @@ HRot == Hid /\ Rot
               /\ \E i \in Pos : part[i] # NE.part[i] /\ part'[i] = NE.part[i]
            \/ /\ NE.ev = "Finish" /\ ~NE.ok /\ part = offer
               /\ \E i \in Pos : part'[i] = "x"
-HCrash == Hid /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part /\ Crash
+HCrash == Hid /\ l > 1 /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part /\ Crash
 \* HPrior: the trace's first Open finds chunks an earlier receive staged that
-\* this trace does not show (a striped receive writes no Resume lines).
+\* this trace does not show (a striped receive writes no Resume lines);
+\* before the first line it is the only change of part (HCrash would
+\* enumerate every subset of Pos to reach it).
 HPrior == Hid /\ l = 1 /\ part = Empty /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part
           /\ UNCHANGED <<offer, src, need, sess, committed, faults, resumed, refused>>
 HChange == Hid /\ NE.ev \in {"Open", "Bad"} /\ src' \in Srcs \ {src} /\ Change
