@@ -27,6 +27,13 @@ These change what scripts see; v1.0 keeps them.
   BLAKE3 tree and the receiver's check of the file on its disk read
   4 MiB at a time instead of 256 KiB; from a cold page cache that read
   the disk 1.6 times as fast (local, docs/performance.md).
+- **A file changed while a later one was sent is no longer committed as
+  offered.** The sender checks every file's size and modification time
+  again before it ends the transfer (an earlier one changed: refused,
+  "changed since it was offered"), and the receiver checks every staged
+  file again before it commits (one another program wrote after it was
+  verified: the commit is refused, the stage kept, and the next session
+  sends what no longer verifies). Model `spec/Offer.tla` (lane SENDMULTI).
 
 ## v0.1.9
 

@@ -23,6 +23,8 @@ func (r *receiver) trData([]byte, int64)    {}
 func (r *receiver) trBad([]byte, int64)     {}
 func (r *receiver) trVerified(bool)         {}
 func (r *receiver) trCut()                  {}
+func (r *receiver) trRechecked(int)         {}
+func (r *receiver) trCutPending()           {}
 func (r *receiver) trBegin(bool)            {}
 func (r *receiver) trRename(int, error)     {}
 func (r *receiver) trPend(string, int)      {}

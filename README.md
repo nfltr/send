@@ -119,7 +119,9 @@ peer to peer:
 
 ## What the sender refuses
 
-- A file whose size or modification time changed since it was offered.
+- A file whose size or modification time changed since it was offered,
+  also one that changed after it was sent, while a later file was: every
+  file is checked again before the transfer ends.
 - Anything that is not a regular file or a directory (a symlink, a device).
 - Two sources with the same base name.
 

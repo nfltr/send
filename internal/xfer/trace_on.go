@@ -56,6 +56,7 @@ type stageTrace struct {
 type fileTrace struct {
 	f    *os.File
 	done bool // verified: Resume's committed
+	pend bool // verified in this session, its Finish written at the commit's recheck
 }
 
 type recvTrace struct {
@@ -263,15 +264,21 @@ func (r *receiver) trBad(p []byte, off int64) {
 }
 
 // trVerified: a file's digest over what is on disk compared (Resume
-// Finish); its top's last file verified is Commit Verify.
+// Finish, written now when it fails; when it verifies, at the commit's
+// recheck, trRechecked, or a Cut if the session ends first: Resume's
+// Finish commits, and the offer commits only after its recheck, Offer.tla);
+// its top's last file verified is Commit Verify.
 func (r *receiver) trVerified(ok bool) {
 	st := r.tr.st
 	if st == nil {
 		return
 	}
 	if ft := st.files[r.tr.cur]; ft != nil {
-		st.emit(ft.f, map[string]any{"ev": "Finish", "ok": ok})
-		ft.done = ft.done || ok
+		if ok {
+			ft.pend = true
+		} else {
+			st.emit(ft.f, map[string]any{"ev": "Finish", "ok": false})
+		}
 	}
 	if !ok {
 		return
@@ -290,6 +297,37 @@ func (st *stageTrace) topVerified(t int) bool {
 		}
 	}
 	return true
+}
+
+// trRechecked: the commit's recheck (Offer.tla Commit) passed (bad < 0)
+// or refused entry bad: each file verified in this session takes its
+// Finish, bad's failed (Resume Finish after a hidden Rot).
+func (r *receiver) trRechecked(bad int) {
+	st := r.tr.st
+	if st == nil {
+		return
+	}
+	for i, ft := range st.files {
+		if ft.pend {
+			st.emit(ft.f, map[string]any{"ev": "Finish", "ok": i != bad})
+			ft.done = ft.done || i != bad
+			ft.pend = false
+		}
+	}
+}
+
+// trCutPending: the session ended before the commit's recheck: each file
+// verified in it takes a Cut (its part stays, verified again next session).
+func (r *receiver) trCutPending() {
+	if r.tr.st == nil {
+		return
+	}
+	for _, ft := range r.tr.st.files {
+		if ft.pend {
+			r.tr.st.emit(ft.f, map[string]any{"ev": "Cut"})
+			ft.pend = false
+		}
+	}
 }
 
 // trCut: the session ended inside a file (Resume Cut).

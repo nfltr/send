@@ -147,6 +147,9 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 			return a, sent, err
 		}
 	}
+	if err := s.recheck(); err != nil {
+		return a, sent, err
+	}
 	if err := c.write(frameDone, nil); err != nil {
 		return a, sent, err
 	}
@@ -217,12 +220,35 @@ var ErrChanged = errors.New("changed since it was offered: send it again")
 // readFile reads a file being served (a test counts the bytes).
 var readFile = func(f *os.File) io.Reader { return f }
 
+// recheck checks every file again after the last was sent, before the
+// done frame: one written after its own check, while a later file was
+// sent, is refused (spec Offer.tla Done, mutant no-sender-recheck).
+func (s *Source) recheck() error {
+	for i, e := range s.Manifest.Entries {
+		if e.Dir {
+			continue
+		}
+		fi, err := os.Stat(s.files[i])
+		if err != nil {
+			return err
+		}
+		if err := same(fi, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // unchanged refuses a file whose size or mtime is no longer the manifest's.
 func unchanged(f *os.File, e Entry) error {
 	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
+	return same(fi, e)
+}
+
+func same(fi fs.FileInfo, e Entry) error {
 	if fi.Size() != e.Size || fi.ModTime().UnixNano() != e.MTime {
 		return fmt.Errorf("%s %w", e.Path, ErrChanged)
 	}

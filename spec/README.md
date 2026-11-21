@@ -250,7 +250,7 @@ constant `traceOn`: no code in a release binary. 99 traces, about 10 s.
 | `Expire` (`finishStage`: a stale stage without its intent) | `Expire`; of a stage holding nothing, a stutter |
 | Resume `Init` {n} | N: the file's length in chunks of `maxData` bytes |
 | `Open` {part, off} (`run`, a start frame: the part on disk before the cut to the offset, as chunk digests; the offset in chunks) | `Open`; once verified, `Served` |
-| `Send` {i, v} (a chunk verified and complete on disk), `Bad` {i, v} (a chunk that did not verify), `Finish` {ok} (`verify`), `Cut` (the session ended inside the file) | `Send`, `Bad`, `Finish`, `Cut` |
+| `Send` {i, v} (a chunk verified and complete on disk), `Bad` {i, v} (a chunk that did not verify), `Finish` {ok} (`verify` when it fails; when it verifies, at the commit's `recheck`, failed for the file it refuses: Resume's Finish commits, the offer only after its recheck, Offer.tla), `Cut` (the session ended inside the file, or after a file it verified and before the recheck) | `Send`, `Bad`, `Finish` (a refused recheck after a hidden `Rot`), `Cut` |
 | hidden | Commit `Foreign`, `Replace` (someone else's names); Resume `Rot`, `Crash`, `Change` (taken only towards the next line); the offer one whose chunk at each position was taken there, the sender's file `src` one whose chunk at each position was taken or refused there |
 
 Abstractions and limits: the tests run receivers and senders as goroutines

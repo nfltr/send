@@ -146,7 +146,8 @@ type receiver struct {
 	sr        *os.Root // the stage
 	lk        *os.File // the stage's lock, held until the receive ends
 	tops      []string
-	finishing bool // the stage holds this offer's intent: its commit stopped part way
+	finishing bool          // the stage holds this offer's intent: its commit stopped part way
+	seen      map[int]int64 // file entry -> its staged file's mtime when verified (recheck)
 	tr        recvTrace
 }
 
@@ -456,6 +457,7 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			if f != nil {
 				r.trCut()
 			}
+			r.trCutPending()
 		}()
 	}
 	fail := func(format string, args ...any) (Answer, error) {
@@ -589,7 +591,7 @@ func (r *receiver) run(c *conn, parts []Part, progress Progress) (Answer, error)
 			if err != nil {
 				return Answer{}, err
 			}
-			err = r.verify(r.m.Entries[cur], tr)
+			err = r.verify(cur, tr)
 			if traceOn {
 				r.trVerified(err == nil)
 			}
@@ -657,16 +659,29 @@ func (r *receiver) open(e Entry, kept bool) (*os.File, error) {
 // verify checks every chunk of what is on disk against the root, in
 // parallel (verified.Verify); a file that does not verify (a chunk that
 // landed wrong) is kept: the next session verifies it again and asks for
-// what does not verify (spec Finish).
-func (r *receiver) verify(e Entry, tr verified.Tree) error {
+// what does not verify (spec Finish). It keeps the file's mtime from
+// before the read for the commit's recheck.
+func (r *receiver) verify(i int, tr verified.Tree) error {
+	e := r.m.Entries[i]
 	f, err := r.sr.Open(e.Path)
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck
-	n, whole, err := tr.Verify(f)
-	if err != nil || whole {
+	fi, err := f.Stat()
+	if err != nil {
 		return err
+	}
+	n, whole, err := tr.Verify(f)
+	if err != nil {
+		return err
+	}
+	if whole {
+		if r.seen == nil {
+			r.seen = map[int]int64{}
+		}
+		r.seen[i] = fi.ModTime().UnixNano()
+		return nil
 	}
 	return fmt.Errorf("%q: what landed is %w after %d bytes; the next session sends again what does not verify", e.Path, ErrUnverified, n)
 }
@@ -683,6 +698,9 @@ var rename = renameNoReplace
 
 func (r *receiver) commit() error {
 	if !r.finishing {
+		if err := r.recheck(); err != nil {
+			return err
+		}
 		for _, e := range r.m.Entries {
 			var err error
 			if e.Dir {
@@ -746,6 +764,32 @@ func (r *receiver) commit() error {
 	err := removeStage(r.root, r.stage, r.lk)
 	r.lk = nil
 	return err
+}
+
+// recheck refuses the commit when a staged file is not as it was when it
+// was verified (its size or mtime): another program wrote it while later
+// files were received. The stage stays; the next session verifies it
+// again (spec Offer.tla Commit, mutant no-receiver-recheck).
+func (r *receiver) recheck() error {
+	for i, e := range r.m.Entries {
+		if e.Dir {
+			continue
+		}
+		fi, err := r.sr.Lstat(e.Path)
+		if mt, ok := r.seen[i]; err == nil && (!ok || fi.Size() != e.Size || fi.ModTime().UnixNano() != mt) {
+			err = fmt.Errorf("%q: what is staged is %w: written after it was verified; the next session verifies it again", e.Path, ErrUnverified)
+		}
+		if err != nil {
+			if traceOn {
+				r.trRechecked(i)
+			}
+			return err
+		}
+	}
+	if traceOn {
+		r.trRechecked(-1)
+	}
+	return nil
 }
 
 // errExists is a top-level name the receiving directory already holds.

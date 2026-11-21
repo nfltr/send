@@ -1118,3 +1118,87 @@ func TestVersionNegotiation(t *testing.T) {
 		})
 	}
 }
+
+// twoFiles makes a.bin and b.bin (n random bytes each) and their Source.
+func twoFiles(t *testing.T, n int) (base string, s *Source) {
+	t.Helper()
+	base = t.TempDir()
+	var srcs []string
+	for _, name := range []string{"a.bin", "b.bin"} {
+		b := make([]byte, n)
+		_, _ = rand.Read(b)
+		p := filepath.Join(base, name)
+		must(t, os.WriteFile(p, b, 0o644))
+		srcs = append(srcs, p)
+	}
+	s, err := NewSource(srcs)
+	must(t, err)
+	return base, s
+}
+
+// An earlier file written on the sender's disk after its own check, while
+// a later file is sent, is refused before the done frame (ErrChanged):
+// nothing is committed (spec Offer.tla Done, mutant no-sender-recheck;
+// lane SENDTAIL's finding).
+func TestSenderRefusesAnEarlierFileChangedBeforeTheCommit(t *testing.T) {
+	base, s := twoFiles(t, 1<<20)
+	a := filepath.Join(base, "a.bin")
+	readFile = func(f *os.File) io.Reader {
+		if filepath.Base(f.Name()) == "b.bin" {
+			fi, err := os.Stat(a)
+			must(t, err)
+			if fi.Size() == 1<<20 {
+				w, err := os.OpenFile(a, os.O_WRONLY|os.O_APPEND, 0)
+				must(t, err)
+				_, err = w.Write([]byte("more"))
+				must(t, errors.Join(err, w.Close()))
+			}
+		}
+		return f
+	}
+	defer func() { readFile = func(f *os.File) io.Reader { return f } }()
+	dst := t.TempDir()
+	sr, rr := session(t, s, dst, 0)
+	if !errors.Is(sr.err, ErrChanged) || rr.a.OK {
+		t.Fatalf("sender %+v, receiver %+v: want ErrChanged and nothing committed", sr, rr)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "a.bin")); err == nil {
+		t.Fatal("an earlier file changed before the commit landed")
+	}
+}
+
+// A staged file written by another program after it was verified, while a
+// later file is received, refuses the commit (ErrUnverified in the
+// answer), the stage kept; the next session sends what no longer verifies
+// and commits the offered files (spec Offer.tla Commit, mutant
+// no-receiver-recheck).
+func TestStagedFileWrittenAfterItsCheckRefusesTheCommit(t *testing.T) {
+	base, s := twoFiles(t, 1<<20)
+	dst := t.TempDir()
+	afterWrite = func(f *os.File, off int64) {
+		if filepath.Base(f.Name()) == "b.bin" && off == 0 {
+			a := filepath.Join(filepath.Dir(f.Name()), "a.bin")
+			w, err := os.OpenFile(a, os.O_WRONLY, 0)
+			must(t, err)
+			_, err = w.WriteAt([]byte("another program"), 3*maxData+5)
+			must(t, errors.Join(err, w.Close()))
+			later := time.Now().Add(time.Hour)
+			must(t, os.Chtimes(a, later, later))
+		}
+	}
+	_, rr := session(t, s, dst, 0)
+	afterWrite = nil
+	if rr.a.OK || !strings.Contains(rr.a.Message, ErrUnverified.Error()) {
+		t.Fatalf("receiver %+v: want the commit refused, ErrUnverified", rr)
+	}
+	if got := names(t, dst); len(got) != 1 { // the stage
+		t.Fatalf("dst holds %q, want only the stage", got)
+	}
+	sr, rr := session(t, s, dst, 0)
+	if sr.err != nil || rr.err != nil || !rr.a.OK {
+		t.Fatalf("next session: sender %+v, receiver %+v", sr, rr)
+	}
+	if digest(t, base) != digest(t, dst) {
+		t.Fatal("differs from the source")
+	}
+}
