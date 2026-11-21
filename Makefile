@@ -7,7 +7,7 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: ci check spec spec-traces bench-line bench-ab release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
+.PHONY: ci check spec spec-traces bench-line bench-write bench-ab release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
 # make ci: the check workflow's Linux jobs but cross-version, for a CI runner
 # of our own.
 ci: check spec spec-traces release-dryrun
@@ -44,6 +44,14 @@ bench-line:
 	cd $(BENCH_OUT) && : >bench.txt && for i in 1 2 3 4 5 6; do \
 		./send.test -test.run '^$$' -test.bench BenchmarkDirectCPU -test.benchtime 1x -test.count 1 \
 		-test.cpuprofile cpu-$$i.prof -transfer-mb 2048 -bench-k $(BENCH_K) >>bench.txt || { cat bench.txt; exit 1; }; done; cat bench.txt
+
+# make bench-write: BenchmarkStripedWrite (4 writers into one 1 GiB file,
+# as a striped receive writes: each WriteAt at once against the receive's
+# writeChunk and preallocate), 6 runs; CPU s per GiB and MiB/s on this
+# machine's temp file system (lane SPEED-RECV; nfltr
+# docs/decisions/send-line-rate-2026-11-21.md "Step 6").
+bench-write:
+	go test -run '^$$' -bench BenchmarkStripedWrite -benchtime 1x -count 6 ./internal/xfer/
 
 # make bench-ab AB='base= ps=github.com/nfltr/link/pathswitch@v0.1.4': the
 # CPU benchmarks (direct and relayed) of builds differing only in their
