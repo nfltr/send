@@ -1,4 +1,4 @@
-# spec: nfltr-send's resume, offer, commit and end (TLA+)
+# spec: nfltr-send's resume, offer, commit, end and stripe (TLA+)
 
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
@@ -186,6 +186,65 @@ files, two faults: 128 states. Not traced (both processes; see "Traces").
 | `no-sender-recheck` | the done frame after the per-file checks only (lane SENDTAIL's finding: an earlier file rewritten while a later one was sent was committed as offered) | `Current` |
 | `no-receiver-recheck` | the commit after the per-file verifies only (a staged file written after its verify, while later files were received) | `Safe` |
 
+### Stripe.tla
+
+`Stripe.tla` models one file of a transfer striped across up to K
+sessions at once, each on a QUIC connection of its own (lane SPEED, the
+design in nfltr `docs/decisions/send-line-rate-2026-11-21.md`; not yet
+code: the receiver today opens one session). The receiver holds the chunks
+still to fetch (`pool`); a session opens with a want naming a set of them,
+taken out of the pool at once (`Open`); the first session's tree frames
+give it the file's tree (`Tree`). The sender sends the set's chunks in
+index order, at most W unread on a session (its stream window, `Send`);
+the receiver reads them in order, verifies each at the offset its want
+says comes next (a data frame carries no offset) and writes it there
+(`Read`): no session waits for another and nothing is reassembled in
+memory. A session ends cleanly once its set is read. A connection dies at
+any time, its unread chunks lost (`Die`); the receiver notices and puts
+every chunk of the set it did not write back into the pool (`Notice`).
+The receiver ends a slow session itself to hand its set to idle ones
+(`Close`, the slow tail). A chunk that does not verify (`Corrupt`) ends
+its session as Resume.tla's `Bad`. The receiver crashes (`Crash`): its
+sessions end, its memory goes, its disk loses any chunk since the last
+sync; the next receive verifies the disk (`Restart`, Resume.tla `Open`).
+The final check commits once the pool is empty and no session is open
+(`Finish`). `spec/check.sh` checks it the same way. C = 3 chunks, K = 2
+sessions, W = 2, two faults: 24313 states (6 s); C = 4, K = 3: 832844 states (2 min, not in `make spec`).
+
+| invariant / property | meaning |
+|---|---|
+| `Right` | every chunk on disk is the offer's chunk for its offset |
+| `Once` | no offset is written twice in one run (no chunk fetched twice) |
+| `Accounted` | while running, every chunk is on disk, in the pool or in the set of a session the receiver holds; the pool and the sets are disjoint |
+| `Bounded` | a session holds at most W unread chunks (the receiver's memory: K windows, no reassembly buffer) |
+| `Safe` | a commit holds the offer's whole file |
+| `Done` | with finitely many faults, the file commits |
+
+| witness (violated) | shows |
+|---|---|
+| `WitnessParallel` | every session with chunks on its wire at once |
+| `WitnessDiedThenCommit` | a commit after a connection died mid-set |
+| `WitnessClosedThenCommit` | a commit after the receiver closed a slow session |
+| `WitnessRefusedThenCommit` | a commit after a chunk was refused |
+| `WitnessResumedCommit` | a commit after a crash, keeping chunks written before it |
+
+| mutant | the failure it plants | caught by |
+|---|---|---|
+| `lost-on-death` | a dead session's sent but unread chunks taken as delivered: only its unsent ones go back to the pool (with `Done` alone: deadlock, the transfer never ends) | `Accounted` |
+| `steal-live` | a slow session's set given to others while it still sends (with `Once` alone: the offset written twice) | `Accounted` |
+| `resume-trust-log` | a restart from a progress record of chunks written, not from verifying the disk: a chunk the crash lost is never asked | `Accounted` |
+| `no-window` | a sender past its stream window | `Bounded` |
+| `accept-unverified` | a chunk written without verifying it at its offset | `Right` |
+| `commit-early` | commit once the pool is empty while a session is still open | `Safe` |
+
+Trace recorder (to land with the code, lane SPEED-MULTI): the receiver's
+lines in `internal/xfer/trace_on.go` gain the session (`k`) on `Open`
+(with its set), `Send`, `Bad`, `Cut` (`Die` then `Notice`; `Close` when
+the receiver ended it) and `Finish`, checked by a `TraceStripe.tla` in
+`spec/traces.sh` as `TraceResume.tla` is, with a mutant trace per
+invariant; the sessions are goroutines of one receive, their lines
+written under the recorder's mutex, so one file is a linearization.
+
 ## Environment assumptions
 
 | assumption | source |
@@ -201,6 +260,7 @@ files, two faults: 128 states. Not traced (both processes; see "Traces").
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `internal/xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `internal/xfer/rename_*.go` |
 | a write to a file changes its size or its mtime (both checks of a file, the per-file ones and the rechecks before the done frame and the commit, compare size and mtime, not the bytes); a write that restores both is caught only while the file is sent (the receiver verifies each chunk) | stat(2) st_mtim (POSIX: a write marks it for update); `internal/xfer/send.go` `unchanged`, `recheck`; `internal/xfer/receive.go` `verify`, `recheck` |
+| Stripe.tla: the K sessions of one receive are independent byte streams (one QUIC connection each, or streams of one connection: the model does not care which); a session delivers its sender's bytes in order or ends; an end before its set is read, clean or not, is a death (`Die`: the receiver counts a set done only once it read every chunk of it, as Resume.tla's `commit-cut`); a session holds at most its stream window unread | RFC 9000 sections 2.2 (a stream's bytes in order), 4.1 (stream flow control); TLS 1.3 records as above; `internal/xfer/receive.go` `run` (a short file is `io.ErrUnexpectedEOF`) |
 
 ## Code map
 
@@ -219,6 +279,7 @@ files, two faults: 128 states. Not traced (both processes; see "Traces").
 | `End.tla` `Answer`, `Close`, `Exit`, `Fail`, `Retell`, `Unserved`, `GiveUp` | `internal/xfer/receive.go` `Receive` (the answer: a commit stands when it does not go, `answer`), `Retell`; `cmd/nfltr-send` `receiveTo`, `receiveOnce`, `retellOnce` (the close, the dials again, the exit status); `Read`: `internal/xfer/send.go` `Serve` (an answer in place of the want); github.com/nfltr/relay `client/nfnet` `Conn.Close`, `dropMux` |
 | `End.tla` `Read` | `internal/xfer/send.go` `Serve` (the answer read); `cmd/nfltr-send` `serve` (`--once` ends on it) |
 | `Offer.tla` `SendFile`, `Done` (the sender's checks), `Commit` (the receiver's recheck) | `internal/xfer/send.go` `Serve`, `sendFile`, `unchanged`, `recheck`; `internal/xfer/receive.go` `run`, `verify`, `recheck`, `commit` |
+| `Stripe.tla` (a design: the code lands with lane SPEED-MULTI) | `cmd/nfltr-send` `receiveTo` (K sessions of one receive); `internal/xfer/receive.go` `run`, `need` (a session's set, its pool); `internal/xfer/send.go` `Serve`, `sendFile` (a want's set, sent in index order) |
 | `TraceCommit.tla`, `TraceResume.tla`, `TraceLog.tla`, `traces.sh`, `traces/` | `internal/xfer/trace_on.go` (the recorder), `internal/xfer/trace_off.go`; the call sites in `internal/xfer/receive.go` (behind `traceOn`) |
 
 ## Traces

@@ -1,5 +1,5 @@
 #!/bin/sh
-# check.sh: TLC on Resume.tla, End.tla, Commit.tla and Offer.tla (spec/README.md): the model with -coverage 1
+# check.sh: TLC on Resume.tla, End.tla, Commit.tla, Offer.tla and Stripe.tla (spec/README.md): the model with -coverage 1
 # (exit 1 on an action no state took), each witness violated, each mutant
 # caught. java and tla2tools.jar from $TLA_JAVA and $TLA_JAR, else
 # github.com/nfltr/link's scripts/fetch-tla.sh output (the pinned versions).
@@ -60,5 +60,18 @@ done
 for m in no-sender-recheck no-receiver-recheck; do
 	tlc Offer "Offer-mutant-$m"
 	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/Offer-mutant-$m.out"); then echo "ok   Offer mutant $m caught ($v)"; else echo "FAIL Offer mutant $m not caught"; fail=1; fi
+done
+tlc Stripe Stripe -coverage 1
+# zero coverage only in Close's mutant branch (steal-live)
+zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module Stripe: 0$/ && a != "<Close" {print}' "$tmp/Stripe.out")
+if grep -q 'No error has been found' "$tmp/Stripe.out" && [ -z "$zero" ]; then echo "ok   Stripe: invariants and Done hold, every action taken"
+else echo "FAIL Stripe"; cat "$tmp/Stripe.out"; fail=1; fi
+for c in WitnessParallel WitnessDiedThenCommit WitnessClosedThenCommit WitnessRefusedThenCommit WitnessResumedCommit; do
+	tlc Stripe "Stripe$c"
+	if grep -q "Invariant $c is violated" "$tmp/Stripe$c.out"; then echo "ok   Stripe $c violated (reachable)"; else echo "FAIL Stripe $c not violated"; fail=1; fi
+done
+for m in lost-on-death steal-live resume-trust-log no-window accept-unverified commit-early; do
+	tlc Stripe "Stripe-mutant-$m"
+	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/Stripe-mutant-$m.out"); then echo "ok   Stripe mutant $m caught ($v)"; else echo "FAIL Stripe mutant $m not caught"; fail=1; fi
 done
 exit $fail
