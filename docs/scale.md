@@ -438,7 +438,15 @@ resumed files' BLAKE3 equals the sent file's.
   drops in any of the three. Peak resident memory: the sender 110-114 MB
   for 10 GiB and 163 MB for 100 GiB, the receiver 124-170 MB and 232 MB.
   CPU: the sender used 277-282 CPU s per 10 GiB and 2,631 for 100 GiB
-  (about one of its 4 vCPUs), the receiver 160-163 and 1,485.
+  (about one of its 4 vCPUs), the receiver 160-163 and 1,485. A
+  pre-release build of the same code used 96-108 and 121-123 on the
+  earlier machines (lane REORDER): interleaved behind netem the two use the
+  same CPU per GiB (`bench/cpu/netem.sh`, lane SENDCPU). Here the
+  receiver sent 1.8 times the ACKs (3.3-3.5 M per 10 GiB: a packet the
+  last ACK reported missing is acknowledged at once, so the count follows
+  the path's reordering), which accounts for the receiver's difference,
+  and the sender machine cost more per byte (it also hashed the address
+  1.5 times slower).
 - **Relayed above direct at 6 ms**: on H and J, the relayed path (TCP to
   the relay on the sender) moved 1,624 to 2,440 Mbit/s and the direct path
   (QUIC) 1,248 to 1,461 Mbit/s. The relayed runs also took about half

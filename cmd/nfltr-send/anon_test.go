@@ -24,7 +24,7 @@ import (
 // addresses served with no account when anon (nf1.anon.enabled), as nfltr
 // docs/decisions/nf1-anon-2026-11-16.md describes; relay-core's own
 // relaycoretest tests set the same keys.
-func anonRelay(t *testing.T, anon bool) *relaycoretest.Relay {
+func anonRelay(t testing.TB, anon bool) *relaycoretest.Relay {
 	set := map[string]any{"nf1.enabled": true, "nf1.hosts": []string{"relay.test"}, "nf1.anon.enabled": anon}
 	for k, v := range set {
 		viper.Set(k, v)
@@ -59,7 +59,7 @@ func serveAnon(t *testing.T, r *relaycoretest.Relay, dir string) (string, <-chan
 	return addr[:len(addr)-1], code
 }
 
-func receiveFrom(t *testing.T, r *relaycoretest.Relay, addr string, mode nfnet.DirectMode, to string) int {
+func receiveFrom(t testing.TB, r *relaycoretest.Relay, addr string, mode nfnet.DirectMode, to string) int {
 	tg, err := nfnet.ParseTarget(addr)
 	if err != nil {
 		t.Fatal(err)
