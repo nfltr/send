@@ -77,7 +77,7 @@ def relay_up():
     d = f"{W}/relay"
     os.makedirs(d, mode=0o700, exist_ok=True)
     env = dict(os.environ, HOME=d, NF1_ENABLED="true", NF1_HOSTS=f"{RELAY}:8444", NF1_ANON_ENABLED="true",
-               RATELIMIT_ENABLE="false", SECURITY_CONN_LIMIT_PER_IP_PACKET_RATE="0")
+               RATELIMIT_ENABLED="false", SECURITY_CONN_LIMIT_PER_IP_PACKET_RATE="0")
     # One sender and one receiver address open every session: lift the per-address and per-source caps.
     for k in ("NF1_ADDRESS", "NF1_SOURCE", "NF1_ANON_SOURCE"):
         env.update({k + "_MAX": "1000", k + "_BURST": "100000", k + "_RATE": "100000"})
