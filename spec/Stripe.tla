@@ -22,7 +22,17 @@
 \* its memory is gone, its disk loses any chunk written since the last
 \* sync; on restart it verifies the disk (Resume.tla Open) and the pool is
 \* every chunk that does not verify. Once the pool is empty and no session
-\* is open, the final check (Resume.tla Finish) commits. Chunk content is
+\* is open, the final check commits (lane SPEED-RECV, nfltr
+\* docs/decisions/send-line-rate-2026-11-21.md "Step 6"): when this run
+\* verified on arrival and wrote every chunk itself (fresh) it trusts them,
+\* reading nothing back; else it verifies the file on disk (Resume.tla
+\* Finish). What else writes the disk: Rot, a chunk this run did not write
+\* (one kept from before a crash) changed (a bad disk, another program),
+\* and Touch, another program's write once the file is complete, which
+\* changes its mtime (touched): the commit's recheck refuses it (Offer.tla
+\* Commit). A refused commit keeps the stage; the next run verifies it
+\* (Restart). Between a file's first write and its last in one run nothing
+\* but the run writes it (README "Environment assumptions"). Chunk content is
 \* the chunk's index (Resume.tla verifies values; here a bad chunk is a
 \* negative index), so a chunk at the wrong offset does not verify.
 
@@ -47,11 +57,14 @@ VARIABLES disk,     \* disk[i]: the chunk written at offset i (0 none, negative 
           phase,    \* the receiver: "run" | "down" (crashed) | "done" (committed)
           writes,   \* writes[i]: writes at offset i since the receiver last started
           logged,   \* chunks ever written (ghost; Mutant "resume-trust-log" restarts from it)
-          ev        \* counts: deaths, closes, refusals, crashes
+          fresh,    \* chunks this run verified on arrival and wrote (the receiver's memory)
+          touched,  \* a write by another program changed the complete file's mtime
+          ev        \* counts: deaths, closes, refusals, crashes, rot, touches
 
-vars == <<disk, pool, want, unsent, wire, st, tree, phase, writes, logged, ev>>
+vars == <<disk, pool, want, unsent, wire, st, tree, phase, writes, logged, fresh, touched, ev>>
 
-Faults == ev.die + ev.close + ev.refuse + ev.crash
+Events == {"die", "close", "refuse", "crash", "rot", "touch"}
+Faults == ev.die + ev.close + ev.refuse + ev.crash + ev.rot + ev.touch
 Bump(f) == [ev EXCEPT ![f] = @ + 1]
 Min(S) == CHOOSE x \in S : \A y \in S : x <= y
 Held(k) == st[k] \in {"open", "dead"}
@@ -67,7 +80,9 @@ TypeOK ==
     /\ phase \in {"run", "down", "done"}
     /\ writes \in [Chunks -> 0..3]
     /\ logged \subseteq Chunks
-    /\ ev \in [{"die", "close", "refuse", "crash"} -> 0..MaxFaults]
+    /\ fresh \subseteq Chunks
+    /\ touched \in BOOLEAN
+    /\ ev \in [Events -> 0..MaxFaults]
 
 Init ==
     /\ disk = [i \in Chunks |-> 0]
@@ -80,7 +95,9 @@ Init ==
     /\ phase = "run"
     /\ writes = [i \in Chunks |-> 0]
     /\ logged = {}
-    /\ ev = [f \in {"die", "close", "refuse", "crash"} |-> 0]
+    /\ fresh = {}
+    /\ touched = FALSE
+    /\ ev = [f \in Events |-> 0]
 
 \* Open: a session with a want for S, taken out of the pool at once (no
 \* other session can be given a chunk of S while k holds it). The first
@@ -92,12 +109,12 @@ Open(k, S) ==
     /\ want' = [want EXCEPT ![k] = S]
     /\ unsent' = [unsent EXCEPT ![k] = S]
     /\ pool' = pool \ S
-    /\ UNCHANGED <<disk, wire, tree, phase, writes, logged, ev>>
+    /\ UNCHANGED <<disk, wire, tree, phase, writes, logged, fresh, touched, ev>>
 
 Tree ==
     /\ phase = "run" /\ ~tree /\ \E k \in Conns : st[k] = "open"
     /\ tree' = TRUE
-    /\ UNCHANGED <<disk, pool, want, unsent, wire, st, phase, writes, logged, ev>>
+    /\ UNCHANGED <<disk, pool, want, unsent, wire, st, phase, writes, logged, fresh, touched, ev>>
 
 \* Send: the sender's next chunk of k's set, in index order, while the
 \* stream window has room. Mutant "no-window": the window ignored.
@@ -107,7 +124,7 @@ Send(k) ==
     /\ LET c == Min(unsent[k]) IN
          /\ wire' = [wire EXCEPT ![k] = Append(@, c)]
          /\ unsent' = [unsent EXCEPT ![k] = @ \ {c}]
-    /\ UNCHANGED <<disk, pool, want, st, tree, phase, writes, logged, ev>>
+    /\ UNCHANGED <<disk, pool, want, st, tree, phase, writes, logged, fresh, touched, ev>>
 
 \* Corrupt: a chunk on the wire is not the offer's (a sender's file
 \* changed, a bad disk there: Resume.tla Change, Rot).
@@ -115,7 +132,7 @@ Corrupt(k) ==
     /\ Faults < MaxFaults /\ wire[k] /= <<>> /\ Head(wire[k]) > 0
     /\ wire' = [wire EXCEPT ![k] = <<-Head(@)>> \o Tail(@)]
     /\ ev' = Bump("refuse")
-    /\ UNCHANGED <<disk, pool, want, unsent, st, tree, phase, writes, logged>>
+    /\ UNCHANGED <<disk, pool, want, unsent, st, tree, phase, writes, logged, fresh, touched>>
 
 \* End k's session from the receiver's side: every chunk of its set it
 \* did not write goes back into the pool. Mutant "lost-on-death": only
@@ -141,6 +158,7 @@ Read(k) ==
        THEN /\ disk' = [disk EXCEPT ![at] = c]
             /\ writes' = [writes EXCEPT ![at] = @ + 1]
             /\ logged' = logged \cup {at}
+            /\ fresh' = fresh \cup {at}
             /\ IF want[k] = {at}
                THEN /\ st' = [st EXCEPT ![k] = "idle"]
                     /\ want' = [want EXCEPT ![k] = {}]
@@ -149,8 +167,8 @@ Read(k) ==
             /\ wire' = [wire EXCEPT ![k] = Tail(@)]
             /\ UNCHANGED <<pool, unsent>>
        ELSE /\ EndSession(k)
-            /\ UNCHANGED <<disk, writes, logged>>
-    /\ UNCHANGED <<tree, phase, ev>>
+            /\ UNCHANGED <<disk, writes, logged, fresh>>
+    /\ UNCHANGED <<tree, phase, touched, ev>>
 
 \* Die: k's connection is cut; what was on its wire is lost, its sender
 \* sends nothing more. Notice: the receiver's read fails; it ends k.
@@ -159,12 +177,12 @@ Die(k) ==
     /\ st' = [st EXCEPT ![k] = "dead"]
     /\ wire' = [wire EXCEPT ![k] = <<>>]
     /\ ev' = Bump("die")
-    /\ UNCHANGED <<disk, pool, want, unsent, tree, phase, writes, logged>>
+    /\ UNCHANGED <<disk, pool, want, unsent, tree, phase, writes, logged, fresh, touched>>
 
 Notice(k) ==
     /\ phase = "run" /\ st[k] = "dead"
     /\ EndSession(k)
-    /\ UNCHANGED <<disk, tree, phase, writes, logged, ev>>
+    /\ UNCHANGED <<disk, tree, phase, writes, logged, fresh, touched, ev>>
 
 \* Close: the receiver ends a session that is still sending (to give its
 \* set to sessions that finished: the slow tail) and stops reading it.
@@ -177,7 +195,7 @@ Close(k) ==
        THEN /\ pool' = pool \cup want[k]
             /\ UNCHANGED <<want, unsent, wire, st>>
        ELSE EndSession(k)
-    /\ UNCHANGED <<disk, tree, phase, writes, logged>>
+    /\ UNCHANGED <<disk, tree, phase, writes, logged, fresh, touched>>
 
 \* Crash: the receiver dies. Its sessions end (their connections with
 \* it), its memory goes, its disk loses any chunk written since the last
@@ -194,31 +212,65 @@ Crash ==
     /\ unsent' = [k \in Conns |-> {}]
     /\ wire' = [k \in Conns |-> <<>>]
     /\ st' = [k \in Conns |-> "idle"]
+    /\ fresh' = IF Mutant = "fresh-across-runs" THEN fresh ELSE {}
     /\ ev' = Bump("crash")
-    /\ UNCHANGED <<writes, logged>>
+    /\ UNCHANGED <<writes, logged, touched>>
 
 \* Restart: the next receive verifies the stage on disk (Resume.tla Open):
 \* the pool is every chunk that does not verify. Mutant
 \* "resume-trust-log": the pool is the chunks never written by an
-\* earlier run (a progress record trusted, the crash's losses skipped).
+\* earlier run (a progress record trusted, the crash's losses skipped);
+\* "fresh-across-runs": the fresh chunks kept over a crash and not fetched
+\* again (the crash's losses missing, then trusted at Finish).
 Restart ==
     /\ phase = "down"
     /\ phase' = "run"
-    /\ pool' = IF Mutant = "resume-trust-log" THEN Chunks \ logged
-               ELSE {i \in Chunks : disk[i] /= i}
+    /\ pool' = CASE Mutant = "resume-trust-log" -> Chunks \ logged
+                  [] Mutant = "fresh-across-runs" -> {i \in Chunks : disk[i] /= i} \ fresh
+                  [] OTHER -> {i \in Chunks : disk[i] /= i}
     /\ writes' = [i \in Chunks |-> 0]
+    /\ fresh' = IF Mutant = "fresh-across-runs" THEN fresh ELSE {}
+    /\ touched' = FALSE
     /\ UNCHANGED <<disk, want, unsent, wire, st, tree, logged, ev>>
 
-\* Finish: nothing left to fetch and no session open: the final check
-\* (Resume.tla Finish, whose refusal keeps the stage for the next run)
-\* verifies the file on disk and commits. Mutant
-\* "commit-early": commit once the pool is empty, a session still open.
+\* Finish: nothing left to fetch and no session open: the final check.
+\* Every chunk fresh: trusted, nothing read back; else the file on disk
+\* verified (Resume.tla Finish). Then the recheck: a touched file refuses.
+\* A refusal keeps the stage (Resume.tla Finish, Offer.tla Commit): the
+\* receive ends, the next verifies the disk (Restart). Mutants:
+\* "commit-early" (commit once the pool is empty, a session still open,
+\* nothing checked), "trust-resumed" (a chunk kept from an earlier run
+\* trusted as if this run had verified it: the check skipped when every
+\* chunk is on disk), "no-recheck" (a touched file committed).
+Trusted == IF Mutant = "trust-resumed" THEN \A i \in Chunks : i \in fresh \/ disk[i] /= 0
+           ELSE fresh = Chunks
 Finish ==
     /\ phase = "run" /\ pool = {}
     /\ (\A k \in Conns : st[k] = "idle") \/ Mutant = "commit-early"
-    /\ (\A i \in Chunks : disk[i] = i) \/ Mutant = "commit-early"
-    /\ phase' = "done"
-    /\ UNCHANGED <<disk, pool, want, unsent, wire, st, tree, writes, logged, ev>>
+    /\ IF \/ Mutant = "commit-early"
+          \/ /\ Trusted \/ \A i \in Chunks : disk[i] = i
+             /\ ~touched \/ Mutant = "no-recheck"
+       THEN phase' = "done"
+       ELSE phase' = "down"
+    /\ UNCHANGED <<disk, pool, want, unsent, wire, st, tree, writes, logged, fresh, touched, ev>>
+
+\* Rot: a chunk on disk that this run did not write is not the offer's (a
+\* bad disk, another program; one kept from an earlier run).
+Rot ==
+    /\ Faults < MaxFaults /\ phase = "run"
+    /\ \E i \in Chunks \ fresh : disk[i] /= 0 /\ disk' = [disk EXCEPT ![i] = -i]
+    /\ ev' = Bump("rot")
+    /\ UNCHANGED <<pool, want, unsent, wire, st, tree, phase, writes, logged, fresh, touched>>
+
+\* Touch: another program writes the file once it is complete (no chunk
+\* left to fetch or being fetched): its mtime changes (README
+\* "Environment assumptions").
+Touch ==
+    /\ Faults < MaxFaults /\ phase = "run" /\ pool = {} /\ \A k \in Conns : want[k] = {}
+    /\ \E i \in Chunks : disk' = [disk EXCEPT ![i] = -i]
+    /\ touched' = TRUE
+    /\ ev' = Bump("touch")
+    /\ UNCHANGED <<pool, want, unsent, wire, st, tree, phase, writes, logged, fresh>>
 
 \* Over: the transfer committed; nothing more happens.
 Over == phase = "done" /\ UNCHANGED vars
@@ -227,7 +279,7 @@ Next ==
     \/ \E k \in Conns, S \in SUBSET Chunks : Open(k, S)
     \/ Tree
     \/ \E k \in Conns : Send(k) \/ Corrupt(k) \/ Read(k) \/ Die(k) \/ Notice(k) \/ Close(k)
-    \/ Crash \/ Restart \/ Finish \/ Over
+    \/ Crash \/ Restart \/ Finish \/ Rot \/ Touch \/ Over
 
 Spec == Init /\ [][Next]_vars
     /\ WF_vars(\E k \in Conns, S \in SUBSET Chunks : Open(k, S))
@@ -237,8 +289,9 @@ Spec == Init /\ [][Next]_vars
 
 \* --- invariants ---
 
-\* Right: every chunk on disk is the offer's chunk for its offset.
-Right == \A i \in Chunks : disk[i] \in {0, i}
+\* Right: every chunk this run verified and wrote is the offer's chunk for
+\* its offset, unless another program touched the file since.
+Right == touched \/ \A i \in fresh : disk[i] = i
 
 \* Once: no offset is written twice in one run (no chunk fetched twice).
 Once == \A i \in Chunks : writes[i] <= 1
@@ -248,7 +301,7 @@ Once == \A i \in Chunks : writes[i] <= 1
 \* disjoint (one holder per chunk).
 Accounted ==
     phase = "run" =>
-      /\ \A i \in Chunks : disk[i] = i \/ i \in pool \/ \E k \in Conns : Held(k) /\ i \in want[k]
+      /\ \A i \in Chunks : disk[i] /= 0 \/ i \in pool \/ \E k \in Conns : Held(k) /\ i \in want[k]
       /\ \A k \in Conns : want[k] \cap pool = {}
       /\ \A j, k \in Conns : j /= k => want[j] \cap want[k] = {}
 
@@ -269,4 +322,10 @@ WitnessDiedThenCommit == ~(phase = "done" /\ ev.die >= 1)
 WitnessClosedThenCommit == ~(phase = "done" /\ ev.close >= 1)
 WitnessRefusedThenCommit == ~(phase = "done" /\ ev.refuse >= 1)
 WitnessResumedCommit == ~(phase = "done" /\ ev.crash >= 1 /\ \E i \in Chunks : writes[i] = 0)
+\* a commit that read nothing back (every chunk fresh)
+WitnessTrustedCommit == ~(phase = "done" /\ fresh = Chunks)
+\* a rotted kept chunk caught by the check, then committed
+WitnessRotThenCommit == ~(phase = "done" /\ ev.rot >= 1)
+\* a touched file refused by the recheck, then committed
+WitnessTouchedThenCommit == ~(phase = "done" /\ ev.touch >= 1)
 =============================================================================

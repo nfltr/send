@@ -33,9 +33,10 @@ VARIABLES offer,     \* the file the offer pinned (its root)
           committed, \* the committed file, <<>> before
           faults,    \* faults so far
           resumed,   \* a session resumed with a chunk kept
-          refused    \* a chunk was refused
+          refused,   \* a chunk was refused
+          fresh      \* the chunks this session verified on arrival and wrote
 
-vars == <<offer, src, part, need, sess, committed, faults, resumed, refused>>
+vars == <<offer, src, part, need, sess, committed, faults, resumed, refused, fresh>>
 
 Pos   == 1..N
 Files == [Pos -> Vals]
@@ -74,6 +75,7 @@ TypeOK ==
     /\ faults \in 0..MaxFaults
     /\ resumed \in BOOLEAN
     /\ refused \in BOOLEAN
+    /\ fresh \subseteq Pos
 
 Init ==
     /\ offer \in Files
@@ -85,6 +87,7 @@ Init ==
     /\ faults = 0
     /\ resumed = FALSE
     /\ refused = FALSE
+    /\ fresh = {}
 
 \* Open: the receiver verifies its part and asks for what it lacks, or, with
 \* no tree kept, for the whole file.
@@ -93,7 +96,7 @@ Open ==
     /\ \E ask \in {Ask(part), Pos} :
           /\ need' = ask
           /\ resumed' = (resumed \/ ask # Pos)
-    /\ sess' = "open"
+    /\ sess' = "open" /\ fresh' = {}
     /\ UNCHANGED <<offer, src, part, committed, faults, refused>>
 
 \* Send: the sender's next asked chunk, verified, written at its position
@@ -104,6 +107,7 @@ Send ==
           /\ Verified(i, src[i]) \/ Mutant = "accept-unverified"
           /\ part' = [part EXCEPT ![i] = src[i]]
           /\ need' = need \ {i}
+          /\ fresh' = fresh \cup {i}
     /\ UNCHANGED <<offer, src, sess, committed, faults, resumed, refused>>
 
 \* Bad: the sender's next asked chunk does not verify: refused at once, not
@@ -112,18 +116,21 @@ Bad ==
     /\ sess = "open" /\ need # {} /\ Mutant # "accept-unverified"
     /\ ~Verified(Min(need), src[Min(need)])
     /\ sess' = "none" /\ refused' = TRUE
-    /\ UNCHANGED <<offer, src, part, need, committed, faults, resumed>>
+    /\ UNCHANGED <<offer, src, part, need, committed, faults, resumed, fresh>>
 
-\* Finish: every asked chunk arrived; the whole file on the receiver's disk
-\* verified, committed when every chunk verifies (mutant "no-final-check":
+\* Finish: every asked chunk arrived. A file whose every chunk this session
+\* verified on arrival and wrote is committed as it is, nothing read back
+\* (lane SPEED-RECV, nfltr docs/decisions/send-line-rate-2026-11-21.md
+\* "Step 6"); else the whole file on the receiver's disk is verified,
+\* committed when every chunk verifies (mutant "no-final-check":
 \* unchecked), else kept for the next session to verify again.
 Finish ==
     /\ sess = "open" /\ need = {}
-    /\ IF Good(part) = Pos \/ Mutant = "no-final-check"
+    /\ IF fresh = Pos \/ Good(part) = Pos \/ Mutant = "no-final-check"
           THEN committed' = part
           ELSE UNCHANGED committed
     /\ sess' = "none"
-    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused, fresh>>
 
 \* CleanEnd (mutant "commit-cut" only): a session that ends cleanly
 \* between chunks taken as the transfer's end, committed as it is.
@@ -131,13 +138,13 @@ CleanEnd ==
     /\ Mutant = "commit-cut"
     /\ sess = "open" /\ need # {} /\ need # Pos
     /\ committed' = part /\ sess' = "none"
-    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, faults, resumed, refused, fresh>>
 
 \* Cut: the session ends (the network, either process): part stays.
 Cut ==
     /\ sess = "open" /\ faults < MaxFaults
     /\ sess' = "none" /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, src, part, need, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, src, part, need, committed, resumed, refused, fresh>>
 
 \* Crash: the receiver dies; what it wrote but had not synced may be lost
 \* (any chunks) or torn (one chunk holds other bytes).
@@ -146,14 +153,20 @@ Crash ==
     /\ \E lost \in SUBSET Pos, t \in Pos, v \in Vals \cup {Hole} :
           part' = [i \in Pos |-> IF i = t THEN v ELSE IF i \in lost THEN Hole ELSE part[i]]
     /\ sess' = "none" /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, src, need, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, src, need, committed, resumed, refused, fresh>>
 
-\* Rot: a chunk on the receiver's disk is not what was written (a write
-\* that landed wrong, a bad disk, another program), at any time before the
-\* commit.
+\* Rot: a chunk on the receiver's disk is not what was written (a bad
+\* disk, another program), at any time before the commit, but a chunk the
+\* open session wrote while the file is still being fetched: from a
+\* file's first write by the session to its last only the receive writes
+\* it (README "Environment assumptions"). Another program's write once the
+\* file is complete changes its mtime: the commit's recheck sees it
+\* (Offer.tla Touch), so the chunk is no longer trusted (fresh).
 Rot ==
     /\ committed = <<>> /\ faults < MaxFaults
     /\ \E i \in Pos, v \in Vals : part[i] # Hole /\ v # part[i] /\ part' = [part EXCEPT ![i] = v]
+          /\ (sess = "none" \/ need = {} \/ i \notin fresh)
+          /\ fresh' = fresh \ {i}
     /\ faults' = faults + 1
     /\ UNCHANGED <<offer, src, need, sess, committed, resumed, refused>>
 
@@ -162,7 +175,7 @@ Rot ==
 Change ==
     /\ committed = <<>> /\ faults < MaxFaults
     /\ src' \in Files \ {src} /\ faults' = faults + 1
-    /\ UNCHANGED <<offer, part, need, sess, committed, resumed, refused>>
+    /\ UNCHANGED <<offer, part, need, sess, committed, resumed, refused, fresh>>
 
 \* Served: the transfer is committed; nothing more happens to this file.
 Served == committed # <<>> /\ UNCHANGED vars

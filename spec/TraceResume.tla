@@ -62,7 +62,7 @@ HCrash == Hid /\ l > 1 /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part /\
 \* before the first line it is the only change of part (HCrash would
 \* enumerate every subset of Pos to reach it).
 HPrior == Hid /\ l = 1 /\ part = Empty /\ NE.ev = "Open" /\ part # NE.part /\ part' = NE.part
-          /\ UNCHANGED <<offer, src, need, sess, committed, faults, resumed, refused>>
+          /\ UNCHANGED <<offer, src, need, sess, committed, faults, resumed, refused, fresh>>
 HChange == Hid /\ NE.ev \in {"Open", "Bad"} /\ src' \in Srcs \ {src} /\ Change
 
 TraceInit == offer \in Offers /\ Init /\ l = 1

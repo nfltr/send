@@ -47,7 +47,7 @@ TBad == Adv /\ E.ev = "Bad" /\ wire[E.k] /= <<>> /\ Head(wire[E.k]) = -E.i
         /\ Min(want[E.k]) = E.i /\ Read(E.k)
 TCut == Adv /\ E.ev = "Cut" /\ Notice(E.k)
 TClose == Adv /\ E.ev = "Close" /\ Close(E.k)
-TFinish == Adv /\ E.ev = "Finish" /\ Finish
+TFinish == Adv /\ E.ev = "Finish" /\ Finish /\ phase' = "done"
 
 HTree == Hid /\ NE.ev \in {"Send", "Bad"} /\ Tree
 HSend == Hid /\ NE.ev \in {"Send", "Bad"} /\ NK \in Conns /\ wire[NK] = <<>> /\ Send(NK)
@@ -62,7 +62,7 @@ HCrash == Hid /\ NE.ev = "Start" /\ Faults < MaxFaults /\ phase = "run"
           /\ phase' = "down" /\ pool' = {}
           /\ want' = [k \in Conns |-> {}] /\ unsent' = [k \in Conns |-> {}]
           /\ wire' = [k \in Conns |-> <<>>] /\ st' = [k \in Conns |-> "idle"]
-          /\ ev' = Bump("crash") /\ UNCHANGED <<writes, logged>>
+          /\ fresh' = {} /\ ev' = Bump("crash") /\ UNCHANGED <<writes, logged, touched>>
 
 TraceInit == Init /\ l = 1
 TraceNext == TStart \/ TRestart \/ TOpen \/ TSend \/ TBad \/ TCut \/ TClose \/ TFinish

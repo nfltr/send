@@ -66,11 +66,11 @@ tlc Stripe Stripe -coverage 1
 zero=$(awk '/^  <[A-Za-z]+ line/ {a=$1} / of module Stripe: 0$/ && a != "<Close" {print}' "$tmp/Stripe.out")
 if grep -q 'No error has been found' "$tmp/Stripe.out" && [ -z "$zero" ]; then echo "ok   Stripe: invariants and Done hold, every action taken"
 else echo "FAIL Stripe"; cat "$tmp/Stripe.out"; fail=1; fi
-for c in WitnessParallel WitnessDiedThenCommit WitnessClosedThenCommit WitnessRefusedThenCommit WitnessResumedCommit; do
+for c in WitnessParallel WitnessDiedThenCommit WitnessClosedThenCommit WitnessRefusedThenCommit WitnessResumedCommit WitnessTrustedCommit WitnessRotThenCommit WitnessTouchedThenCommit; do
 	tlc Stripe "Stripe$c"
 	if grep -q "Invariant $c is violated" "$tmp/Stripe$c.out"; then echo "ok   Stripe $c violated (reachable)"; else echo "FAIL Stripe $c not violated"; fail=1; fi
 done
-for m in lost-on-death steal-live resume-trust-log no-window accept-unverified commit-early; do
+for m in lost-on-death steal-live resume-trust-log no-window accept-unverified commit-early trust-resumed no-recheck fresh-across-runs; do
 	tlc Stripe "Stripe-mutant-$m"
 	if v=$(grep -E -o 'Invariant [A-Za-z]+ is violated' "$tmp/Stripe-mutant-$m.out"); then echo "ok   Stripe mutant $m caught ($v)"; else echo "FAIL Stripe mutant $m not caught"; fail=1; fi
 done

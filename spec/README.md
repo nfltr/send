@@ -2,9 +2,9 @@
 
 `Resume.tla` models one file of a transfer on the receiving side across
 sessions that end at any point, receiver crashes that lose or tear the tail
-of what it wrote, a chunk on its disk that is not what was written (a write
-that landed wrong, a bad disk, another program; in a session or between
-sessions), and a sender's file rewritten (between sessions or during one).
+of what it wrote, a chunk on its disk that is not what was written (a bad
+disk, another program; between sessions, or in a session a chunk it did
+not write), and a sender's file rewritten (between sessions or during one).
 The offer pins the file's BLAKE3 root (an ideal hash tree: the root fixes
 every chunk). The receiver verifies each chunk on arrival against that root
 (Bao verified streaming, the tree's outboard sent ahead of the data) and
@@ -72,7 +72,7 @@ receivers, two faults: 1250 states.
 | `resend-verified` | ask for everything from the first missing or bad chunk on (the prefix resume this replaced: a 1 GiB file with 4 KiB overwritten at 100 MiB was sent again from there) | `Minimal` |
 | `root-unbound` | chunks verified against the root of the file the sender has now, not the pinned offer's | `Kept` |
 | `commit-cut` | a session that ends cleanly between chunks is taken as the end (a tar stream's clean EOF between entries) | `Safe` |
-| `no-final-check` | commit without verifying the file on disk (a write that landed wrong in this session) | `Safe` |
+| `no-final-check` | commit without verifying the file on disk when a chunk of it was kept from an earlier session (one that rotted since) | `Safe` |
 
 ### Commit.tla
 
@@ -208,14 +208,20 @@ its session as Resume.tla's `Bad`. The receiver crashes (`Crash`): its
 sessions end, its memory goes, its disk loses any chunk since the last
 sync; the next receive verifies the disk (`Restart`, Resume.tla `Open`).
 The final check commits once the pool is empty and no session is open
-(`Finish`). `spec/check.sh` checks it the same way. C = 3 chunks, K = 2
-sessions, W = 2, two faults: 24313 states (6 s); C = 4, K = 3: 832844 states (2 min, not in `make spec`).
+(`Finish`; lane SPEED-RECV, nfltr `docs/decisions/send-line-rate-2026-11-21.md`
+"Step 6"): a file whose every chunk this receive verified on arrival and
+wrote (`fresh`) is trusted, nothing read back; any other is verified on
+disk (Resume.tla `Finish`). Then the recheck refuses a file another program
+wrote once it was complete (`Touch`: its mtime, `touched`; Offer.tla
+`Commit`), the stage kept for the next receive (`Restart`). A chunk this
+receive did not write can rot (`Rot`). `spec/check.sh` checks it the same
+way. C = 3 chunks, K = 2 sessions, W = 2, two faults: 27199 states (6 s).
 
 | invariant / property | meaning |
 |---|---|
-| `Right` | every chunk on disk is the offer's chunk for its offset |
+| `Right` | every chunk this receive verified and wrote is the offer's chunk for its offset, unless another program touched the file since |
 | `Once` | no offset is written twice in one run (no chunk fetched twice) |
-| `Accounted` | while running, every chunk is on disk, in the pool or in the set of a session the receiver holds; the pool and the sets are disjoint |
+| `Accounted` | while running, every chunk is on disk (right, or rotted: the final check's), in the pool or in the set of a session the receiver holds; the pool and the sets are disjoint |
 | `Bounded` | a session holds at most W unread chunks (the receiver's memory: K windows, no reassembly buffer) |
 | `Safe` | a commit holds the offer's whole file |
 | `Done` | with finitely many faults, the file commits |
@@ -227,6 +233,9 @@ sessions, W = 2, two faults: 24313 states (6 s); C = 4, K = 3: 832844 states (2 
 | `WitnessClosedThenCommit` | a commit after the receiver closed a slow session |
 | `WitnessRefusedThenCommit` | a commit after a chunk was refused |
 | `WitnessResumedCommit` | a commit after a crash, keeping chunks written before it |
+| `WitnessTrustedCommit` | a commit that read nothing back (every chunk fresh) |
+| `WitnessRotThenCommit` | a kept chunk that rotted, caught by the check, then a commit |
+| `WitnessTouchedThenCommit` | a file another program wrote once complete, refused by the recheck, then a commit |
 
 | mutant | the failure it plants | caught by |
 |---|---|---|
@@ -236,6 +245,9 @@ sessions, W = 2, two faults: 24313 states (6 s); C = 4, K = 3: 832844 states (2 
 | `no-window` | a sender past its stream window | `Bounded` |
 | `accept-unverified` | a chunk written without verifying it at its offset | `Right` |
 | `commit-early` | commit once the pool is empty while a session is still open | `Safe` |
+| `trust-resumed` | commit with a chunk unverified: one kept from an earlier receive trusted as if this one had verified it (the check skipped once every chunk is on disk) | `Safe` |
+| `no-recheck` | a chunk verified, then overwritten by another program: the file's mtime not compared before the commit | `Safe` |
+| `fresh-across-runs` | a missing chunk: the fresh set kept over a crash (a progress record) and its chunks not fetched again | `Right` |
 
 Trace recorder (lane SPEED-MULTI): `internal/xfer/trace_on.go` writes,
 per non-empty file of a stage's generation, `<stage>-s<entry>.ndjson`:
@@ -275,6 +287,7 @@ takes that `Open`'s value as the offer's.
 | a rename is atomic across a crash; a synced file and its directory entry survive one. The received files are synced before the intent record: one syncfs(2) of the file system (Linux), an fsync(2) per file then the intent's F_FULLFSYNC, which flushes the drive's whole cache (macOS), FlushFileBuffers or fsync per file (elsewhere) | rename(2), fsync(2), syncfs(2), fcntl(2) F_FULLFSYNC; `internal/xfer/sync_*.go` |
 | an exclusive lock on the stage's lock file excludes every other holder, in this or another process, until it is released or its holder dies (the kernel releases it); it is advisory: only receivers take it | flock(2) LOCK_EX (Linux, macOS, BSDs: per open file description), LockFileEx LOCKFILE_EXCLUSIVE_LOCK (Windows); `internal/xfer/lock_*.go` |
 | a rename can refuse an existing destination atomically: renameat2 RENAME_NOREPLACE (Linux 3.15+), renamex_np RENAME_EXCL (macOS 10.12+), MoveFileEx without MOVEFILE_REPLACE_EXISTING (Windows). Where a file system refuses the flag (Linux EINVAL, EOPNOTSUPP or ENOSYS; macOS ENOTSUP or EINVAL), and on other platforms, a file is linked (link(2) fails on an existing name) then unlinked, and a directory commit is refused (`ErrNoAtomicRename`): the model's Rename holds only where a primitive exists | rename(2) of Linux and macOS, link(2), MoveFileExW; `internal/xfer/rename_*.go` |
+| a write the receiver makes stores the bytes it was given at its offset, or returns an error (pwrite(2); a failed writeback fails the file's fsync(2), Linux errseq since 4.13): the final check no longer reads back a file every chunk of which this receive verified and wrote (Stripe.tla `Trusted`, Resume.tla `Finish`); that read came from the page cache anyway, so it never saw the media. Between a file's first write by a receive and its last, only that receive writes it: the stage is a 0700 directory named by the manifest's digest, held under the receive's lock; a write by another program after the last is caught by the mtime recheck (Stripe.tla `Touch`, Offer.tla `Touch`) | pwrite(2), fsync(2); `internal/xfer/receive.go` `read` (`keep`, `fresh`), `open`; `internal/xfer/stripe.go` `final` |
 | a write to a file changes its size or its mtime (both checks of a file, the per-file ones and the rechecks before the done frame and the commit, compare size and mtime, not the bytes); a write that restores both is caught only while the file is sent (the receiver verifies each chunk) | stat(2) st_mtim (POSIX: a write marks it for update); `internal/xfer/send.go` `unchanged`, `recheck`; `internal/xfer/receive.go` `verify`, `recheck` |
 | Stripe.tla: the K sessions of one receive are independent byte streams (one QUIC connection each, or streams of one connection: the model does not care which); a session delivers its sender's bytes in order or ends; an end before its set is read, clean or not, is a death (`Die`: the receiver counts a set done only once it read every chunk of it, as Resume.tla's `commit-cut`); a session holds at most its stream window unread | RFC 9000 sections 2.2 (a stream's bytes in order), 4.1 (stream flow control); TLS 1.3 records as above; `internal/xfer/receive.go` `read` (a short file is `io.ErrUnexpectedEOF`) |
 
