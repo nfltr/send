@@ -279,6 +279,7 @@ func (r *receiver) trBad(s *sess, p []byte, off int64) {
 	h := sha256.New()
 	h.Write(p)
 	r.tr.st.emit(r.tr.st.files[s.tr.cur].f, map[string]any{"ev": "Bad", "i": off/maxData + 1, "v": chunk(h)})
+	r.tr.st.files[s.tr.cur].open = false // Bad ends the session (Resume Bad): no Cut follows
 }
 
 // trVerified: a file's digest over what is on disk compared (Resume
