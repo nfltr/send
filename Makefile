@@ -50,7 +50,7 @@ release-dryrun:
 # when set), nfltr and nfltr-relay NFLTR_VERSION from the installer, or
 # REL_BIN=<dir> with all three. Exit 0 only when every transfer passed.
 SEND_VERSION ?=
-NFLTR_VERSION ?= v2.1.73
+NFLTR_VERSION ?= v2.1.78
 export SEND_VERSION NFLTR_VERSION
 reliability:
 	sh bench/rel/run.sh matrix
