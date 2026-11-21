@@ -151,10 +151,11 @@ type receiver struct {
 	seen      map[int]int64 // file entry -> its staged file's mtime when verified (recheck)
 	tr        recvTrace
 
-	mu       sync.Mutex     // the sessions': trees, fresh, progress, the trace
-	trees    map[int][]byte // entry -> its tree, once a session read it whole
-	fresh    map[int]*fresh // entry -> its chunks this receive verified and wrote
-	written  int64          // file bytes written by this receive
+	mu       sync.Mutex          // the sessions': trees, fresh, progress, the trace
+	trees    map[int][]byte      // entry -> its tree, once a session read it whole
+	fresh    map[int]*fresh      // entry -> its chunks this receive verified and wrote
+	wlocks   map[int]*sync.Mutex // entry -> its writers' turn (writeChunk)
+	written  int64               // file bytes written by this receive
 	progress Progress
 }
 
@@ -481,7 +482,7 @@ func (r *receiver) read(s *sess) error {
 			f = nil
 			return fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, pd.off, ErrUnverified)
 		}
-		if _, err := f.WriteAt(pd.p, pd.off); err != nil {
+		if err := r.writeChunk(cur, f, pd.p, pd.off); err != nil {
 			_ = f.Close()
 			f = nil
 			return err
@@ -668,7 +669,37 @@ func (r *receiver) open(i int, kept bool) (*os.File, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	// Only a file nothing is written to yet (every session opens every
+	// file): fallocate sets the mtime, and a complete file's is the
+	// recheck's (wroteChunk, under r.mu as this is, takes it after).
+	// TestStripedReceiveSendsEachChunkOnce on Linux.
+	if !kept || fi.Size() == 0 {
+		preallocate(f, e.Size)
+	}
 	return f, nil
+}
+
+// writeChunk writes p at off in entry i's file f. The sessions writing one
+// file take turns on a lock of ours, parked, rather than spinning on its
+// inode's lock in the kernel (a buffered write takes it exclusively: ext4,
+// xfs, tmpfs). BenchmarkStripedWrite (lane SPEED-RECV, nfltr
+// docs/performance-ledger.md): 4 writers, ext4, 1.47 -> 0.58 CPU s per GiB
+// with preallocate.
+func (r *receiver) writeChunk(i int, f *os.File, p []byte, off int64) error {
+	r.mu.Lock()
+	if r.wlocks == nil {
+		r.wlocks = map[int]*sync.Mutex{}
+	}
+	m := r.wlocks[i]
+	if m == nil {
+		m = new(sync.Mutex)
+		r.wlocks[i] = m
+	}
+	r.mu.Unlock()
+	m.Lock()
+	defer m.Unlock()
+	_, err := f.WriteAt(p, off)
+	return err
 }
 
 // fresh is a file's chunks this receive verified on arrival and wrote

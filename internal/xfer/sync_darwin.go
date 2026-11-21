@@ -18,3 +18,6 @@ func syncFile(f *os.File) error { return unix.Fsync(int(f.Fd())) }
 
 // syncStage: nothing more before the intent record (see syncFile).
 func syncStage(*os.Root) error { return nil }
+
+// preallocate: none here (Linux only).
+func preallocate(*os.File, int64) {}

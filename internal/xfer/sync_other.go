@@ -13,3 +13,6 @@ func syncFile(f *os.File) error { return f.Sync() }
 
 // syncStage: each file was synced (syncFile).
 func syncStage(*os.Root) error { return nil }
+
+// preallocate: none here (Linux only).
+func preallocate(*os.File, int64) {}

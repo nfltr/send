@@ -24,3 +24,14 @@ func syncStage(sr *os.Root) error {
 	defer d.Close() //nolint:errcheck
 	return unix.Syncfs(int(d.Fd()))
 }
+
+// preallocate reserves the blocks of a file about to be written whole
+// (fallocate(2) FALLOC_FL_KEEP_SIZE: its size unchanged, what is not
+// written reads as zeros), so the writers allocate nothing; best effort
+// (a file system without it allocates as it writes). BenchmarkStripedWrite
+// (lane SPEED-RECV, ext4): with writeLock, 1.47 -> 0.58 CPU s per GiB.
+func preallocate(f *os.File, size int64) {
+	if size > 0 {
+		_ = unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_KEEP_SIZE, 0, size)
+	}
+}
