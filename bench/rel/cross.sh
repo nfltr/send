@@ -17,7 +17,7 @@
 # and an older receiver 6 (its reset, naming the sender's reason: no
 # direct path formed and no account).
 # Results in REL_OUT/<sender>-<receiver>.
-# Exit 0 only when every transfer of both ways refused so.
+# Exit 0 only when every transfer of both ways ended so.
 set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
 : "${SEND_PREV:?the previous release, e.g. v0.1.7}" "${NFLTR_VERSION:?}"
@@ -35,7 +35,13 @@ echo "cross-version: nfltr-send $SEND_PREV and $(cd "$here" && git describe --ta
 cells=${CROSS_CELLS:-'^net-100mbit-1ms-loss0-(direct|relayed)$'}
 anon=${CROSS_ANON_CELLS:-'^anon-direct$'}
 rc=0
-for pair in "nfltr-send-prev nfltr-send 4 12" "nfltr-send nfltr-send-prev 6 6"; do
+# Against v0.1.12 (protocol 5 too) a sender with an account is carried
+# relayed: the file cells must succeed (exit 0) both ways.
+case $SEND_PREV in v0.1.1[01]|v0.1.[0-9]) codes="4 12|6 6" ;; *) codes="0 12|0 6" ;; esac
+old_ifs=$IFS IFS='|'
+set -- $codes
+IFS=$old_ifs
+for pair in "nfltr-send-prev nfltr-send $1" "nfltr-send nfltr-send-prev $2"; do
 	set -- $pair
 	for run in "$cells $3 $out/$1-$2" "$anon $4 $out/$1-$2-anon"; do
 		set -- "$1" "$2" $run

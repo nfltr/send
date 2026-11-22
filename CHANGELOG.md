@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.1.13
+
+- **A direct transfer uses less CPU.** On a direct path each byte is now
+  encrypted once, by the direct QUIC connection's TLS 1.3 (it already
+  checks the other end's pinned key and is bound to the session), instead
+  of a second time by the session's end-to-end TLS inside it; a relayed
+  path keeps the session's TLS (relay client v0.25.0). Between two 8-vCPU
+  cloud machines in one zone, a 10 GiB direct transfer took 6 % less CPU
+  per GiB on the sender and 6-8 % less on the receiver, with
+  `--connections` 4 and 8 (4 runs each, run in turn with the code before).
+  Its rate did not change on that pair, whose limit was the sending
+  machine's packet path, not CPU; relayed transfers are unchanged. BLAKE3
+  equal in every run.
+- **Hard cut on the direct path: both ends need v0.1.13 for direct.**
+  v0.1.13 and v0.1.12 still speak protocol 5, but their direct paths
+  differ, so between them no direct path forms:
+  - a sender with an account carries the transfer relayed (every byte,
+    as before), both ways;
+  - with a sender that has no account (direct only), a v0.1.13 receiver
+    exits 12 (`direct_required`) at once, and a v0.1.12 receiver exits 6
+    (a protocol error: its reset names the sender's reason, no direct path
+    and no account). Nothing is written.
+  Against v0.1.11 and earlier the refusals of v0.1.12 hold (exit 4 and 6).
+- **Fewer acknowledgements on paths that reorder deeply.** v0.1.12's ACK
+  Frequency did not reduce acknowledgements on a real long path (Helsinki
+  to Singapore, 260 ms): on a path that reorders packets by more than 10
+  places, the receiving end still acknowledged each such late packet at
+  once. Now, once the sending end sees that reordering, it asks again for
+  no immediate acknowledgement of reordered packets (quiclink v0.9.0, its
+  QUIC fork v0.63.1-nfltr.9). This aims to cut acknowledgements and
+  their CPU on such paths; it is not measured on a real path yet.
+- Built on link v0.13.3, pathswitch v0.1.4, quiclink v0.9.0, relay client
+  v0.25.0, relay proto v0.22.2 and relay-core v0.19.6.
+
 ## v0.1.12
 
 - **One direct transfer runs over several connections and is more than
