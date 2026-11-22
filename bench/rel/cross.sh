@@ -11,7 +11,11 @@
 # (refused, naming both versions), this sender and an old receiver exit 6
 # (the old receiver's protocol error); with a sender with no account the
 # direct path does not form (quiclink v0.8.0 refuses a QUIC peer without
-# ACK Frequency), so the receiver exits 12 (direct_required) both ways.
+# ACK Frequency), so the receiver exits 12 (direct_required) both ways;
+# against v0.1.12 or earlier (direct paths sealed twice, hint d1; nfltr
+# docs/decisions/direct-once-2026-11-22.md) this receiver exits 12 at once
+# and an older receiver 6 (its reset, naming the sender's reason: no
+# direct path formed and no account).
 # Results in REL_OUT/<sender>-<receiver>.
 # Exit 0 only when every transfer of both ways refused so.
 set -eu
@@ -31,9 +35,9 @@ echo "cross-version: nfltr-send $SEND_PREV and $(cd "$here" && git describe --ta
 cells=${CROSS_CELLS:-'^net-100mbit-1ms-loss0-(direct|relayed)$'}
 anon=${CROSS_ANON_CELLS:-'^anon-direct$'}
 rc=0
-for pair in "nfltr-send-prev nfltr-send 4" "nfltr-send nfltr-send-prev 6"; do
+for pair in "nfltr-send-prev nfltr-send 4 12" "nfltr-send nfltr-send-prev 6 6"; do
 	set -- $pair
-	for run in "$cells $3 $out/$1-$2" "$anon 12 $out/$1-$2-anon"; do
+	for run in "$cells $3 $out/$1-$2" "$anon $4 $out/$1-$2-anon"; do
 		set -- "$1" "$2" $run
 		echo "== sender $1, receiver $2, cells $3, exit $4"
 		REL_EXPECT=$4 REL_BIN=$bin REL_OUT=$5 REL_SEND_S=$1 REL_SEND_R=$2 REL_N=${REL_N:-1} REL_SMALL=${REL_SMALL:-500} \

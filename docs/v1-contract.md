@@ -161,7 +161,12 @@ receiver (version 4) ends at once with a protocol error (exit 6), never
 retrying. v0.1.12 also took quiclink v0.8.0, which refuses a QUIC peer
 without ACK Frequency, so between v0.1.12 and an earlier end no direct
 path forms: with a sender with no account the receiver exits 12
-(`direct_required`). `make cross-version`
+(`direct_required`). The release after v0.1.12 is a hard cut of the
+direct path too (its relay client seals each byte once there, sender
+hint `d2`; nfltr `docs/decisions/direct-once-2026-11-22.md`): against
+v0.1.12 or earlier, with a sender with no account, a newer receiver exits
+12 at once and an older one 6 (its reset, naming the sender's reason).
+`make cross-version`
 (`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
 `make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
