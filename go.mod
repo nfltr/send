@@ -3,7 +3,7 @@ module github.com/nfltr/send
 go 1.27.2
 
 require (
-	github.com/nfltr/blake3 v1.5.2-0.20261122142031-4aeb55eb7dde
+	github.com/nfltr/blake3 v1.5.2
 	github.com/nfltr/relay-core v0.19.7
 	github.com/nfltr/relay/client v0.25.1
 	github.com/spf13/viper v1.21.0
