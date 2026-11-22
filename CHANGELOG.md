@@ -48,6 +48,9 @@
   - with a sender that has no account (direct only), the direct path does
     not form between the two (the QUIC peer without ACK Frequency is
     refused), so the receiver exits 12 (`direct_required`).
+- **A sender whose move to another relay replica failed moves when the
+  relay asks again**; before, it ignored the second ask and stayed where
+  the relay was rebalancing away from (relay client v0.24.5).
 - `--connections <n>` (receive, 1 to 16, default 4). 8 was faster than 4
   on the machines above; the default stays 4 until 8 is measured on
   slower receivers and long paths.
