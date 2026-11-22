@@ -134,27 +134,10 @@ func eachChunk(r io.ReaderAt, size int64, limit func() int64, f func(i int64, p 
 }
 
 // groupCV is the chaining value of the BLAKE3 subtree of p, whose first
-// 1 KiB chunk is chunk counter of the file: guts.MaxSIMD chunks at a time,
-// merged as merge does.
+// 1 KiB chunk is chunk counter of the file (guts.CompressSubtree: in
+// place, each level of parents a SIMD width at a time).
 func groupCV(p []byte, counter uint64) [8]uint32 {
-	const n = guts.MaxSIMD * guts.ChunkSize
-	cvs := make([][8]uint32, 0, GroupSize/n)
-	var buf [n]byte
-	for off := 0; off < len(p); off += n {
-		k := copy(buf[:], p[off:])
-		cvs = append(cvs, guts.ChainingValue(guts.CompressBuffer(&buf, k, &guts.IV, counter+uint64(off/guts.ChunkSize), 0)))
-	}
-	return merge(cvs)
-}
-
-// merge is the chaining value of the BLAKE3 subtree over cvs: the left
-// subtree takes the largest power of two of them short of all.
-func merge(cvs [][8]uint32) [8]uint32 {
-	if len(cvs) == 1 {
-		return cvs[0]
-	}
-	mid := 1 << (bits.Len(uint(len(cvs)-1)) - 1)
-	return guts.ChainingValue(guts.ParentNode(merge(cvs[:mid]), merge(cvs[mid:]), &guts.IV, 0))
+	return guts.ChainingValue(guts.CompressSubtree(p, &guts.IV, counter, 0))
 }
 
 // parents writes the outboard's parent nodes over the chunks' cvs into

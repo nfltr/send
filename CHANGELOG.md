@@ -11,6 +11,16 @@
   that refuses O_DIRECT is written through the page cache as before.
   blake3 v1.5.1 verifies each chunk group in place, not through a copy
   (5 % less time per 256 KiB group).
+- **BLAKE3 hashes and verifies faster on amd64.** blake3 v1.5.2 hashes a
+  256 KiB chunk group's chunks first and then its parents a level at a
+  time (every SIMD lane busy), and its amd64 kernels load and transpose
+  each block instead of gathering each word, which is slow on Intel CPUs
+  with the Gather Data Sampling mitigation (Skylake to Ice Lake). One core
+  verifies a chunk group 84 % faster on a GCP n2 (Cascade Lake), 17 % on
+  a c3 (Sapphire Rapids), 3 % on arm64; in a 10 GiB transfer the
+  receiver's BLAKE3 took 37 % less CPU on n2 and 20 % less on c3, about
+  1 % of the receiver's whole CPU (QUIC and the copies are most of it);
+  the sender's tree build hashes the same way (3 % less sender CPU).
 
 ## v0.1.13
 
