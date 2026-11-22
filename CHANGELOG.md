@@ -39,7 +39,7 @@
   packets per data packet at the same rate; the CPU this saves on a real
   reordering path is not measured yet.
 - **Hard cut: both ends need v0.1.12.** v0.1.11 and earlier and this
-  release refuse each other at once, neither retries, nothing is written:
+  release refuse each other, neither retries, nothing is written:
   - a v0.1.12 receiver of an older sender exits 4 (`refused`):
     `refused: the sender speaks protocol version 4, this receiver 5 to 5:
     update the older end`;
@@ -47,7 +47,9 @@
     frame it does not expect: the sender's answer naming both versions);
   - with a sender that has no account (direct only), the direct path does
     not form between the two (the QUIC peer without ACK Frequency is
-    refused), so the receiver exits 12 (`direct_required`).
+    refused), so the receiver exits 12 (`direct_required`) once its
+    direct attempts fail (2 s to about a minute on one machine); the
+    other two refuse at the first frame.
 - **A sender whose move to another relay replica failed moves when the
   relay asks again**; before, it ignored the second ask and stayed where
   the relay was rebalancing away from (relay client v0.24.5).
