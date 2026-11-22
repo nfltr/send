@@ -91,7 +91,7 @@ runs the previous release, `SEND_PREV` in the Makefile (downloaded from its
 GitHub release by `fetch.sh`, `SHA256SUMS.sshsig` verified against
 `release/allowed_signers` and the binary against `SHA256SUMS`), against
 nfltr-send built from the checkout, on this harness's private relay, twice:
-the old one sends and the new one receives (`REL_SEND_S`, `REL_SEND_R`), then the reverse. Cells (`CROSS_CELLS`): a file at 100 Mbit/s relayed and direct, and `anon-direct`; `REL_N` runs each (default 1). Protocol 5 is a hard cut, so each run must refuse at once with nothing written (`REL_EXPECT`): the new receiver exits 4, the old receiver 6.
+the old one sends and the new one receives (`REL_SEND_S`, `REL_SEND_R`), then the reverse. Cells (`CROSS_CELLS`): a file at 100 Mbit/s relayed and direct, and `anon-direct`; `REL_N` runs each (default 1). Protocol 5 is a hard cut, so each run must refuse at once with nothing written (`REL_EXPECT`): the new receiver exits 4, the old receiver 6; `anon-direct` (`CROSS_ANON_CELLS`, a run of its own) exits 12 both ways, since the direct path does not form across quiclink v0.8.0's ACK Frequency cut and a sender with no account has no relayed path.
 Results in `REL_OUT/<first>-<second>/`. It exits 0 only when every run of
 both ways refused so. A release moves `SEND_PREV` to itself.
 

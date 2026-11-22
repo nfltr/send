@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.1.12
 
-- **One transfer over several connections** (protocol version 5): the
+- **One direct transfer runs over several connections and is more than
+  twice as fast.** Between two 8-vCPU machines in one cloud zone (0.2 ms,
+  15.6 Gbit/s on one TCP stream), a 10 GiB direct transfer ran at
+  5.88 Gbit/s with the default `--connections 4` and 6.22 with
+  `--connections 8` (medians of 3; v0.1.11 on the same machines, run in
+  turn with it: 2.59), 100 GiB at 6.82 with 8; relayed with 4, 4.79
+  (v0.1.11: 3.26). BLAKE3 equal in every run ([docs/scale.md](docs/scale.md)
+  test 7). The receiver's CPU is now the limit.
+- **Protocol version 5, a receive striped over sessions**: the
   receiver opens up to `--connections` sessions at once (default 4), each
   on a connection of its own, so each one's packets have a core at both
   ends. Each session's want names a set of the chunks still to fetch
@@ -24,9 +32,28 @@
 - **A striped receive's writers take turns** on one file instead of
   spinning on the kernel's inode lock, into blocks preallocated on Linux:
   4 writers on ext4 1.47 -> 0.58 CPU s per GiB (`BenchmarkStripedWrite`).
-- **Hard cut**: a v0.1 end (protocol 4) and this one refuse each other at
-  once, with an answer naming both versions: a receiver exits 4 (refused),
-  a v0.1 receiver exits 6 (protocol error), neither retries.
+- **The direct path asks for fewer acknowledgements** (QUIC's ACK
+  Frequency extension, quiclink v0.8.0): the receiver acknowledges every
+  10 packets and only a packet more than 10 places late at once. On a
+  simulated path that reorders 30 % of its packets, 0.39 -> 0.10 ACK
+  packets per data packet at the same rate; the CPU this saves on a real
+  reordering path is not measured yet.
+- **Hard cut: both ends need v0.1.12.** v0.1.11 and earlier and this
+  release refuse each other at once, neither retries, nothing is written:
+  - a v0.1.12 receiver of an older sender exits 4 (`refused`):
+    `refused: the sender speaks protocol version 4, this receiver 5 to 5:
+    update the older end`;
+  - an older receiver of a v0.1.12 sender exits 6, a protocol error (a
+    frame it does not expect: the sender's answer naming both versions);
+  - with a sender that has no account (direct only), the direct path does
+    not form between the two (the QUIC peer without ACK Frequency is
+    refused), so the receiver exits 12 (`direct_required`).
+- `--connections <n>` (receive, 1 to 16, default 4). 8 was faster than 4
+  on the machines above; the default stays 4 until 8 is measured on
+  slower receivers and long paths.
+- Built on link v0.13.3, pathswitch v0.1.4, quiclink v0.8.0 (QUIC fork
+  v0.63.1-nfltr.7), relay client v0.24.5, relay proto v0.22.1 and
+  relay-core v0.19.5.
 
 ## v0.1.11
 

@@ -93,7 +93,7 @@ When nfltr-send exits with each:
 - 3: receive: the sender stopped, never ran, or its `--once` transfer
   ended.
 - 4: receive: a name exists in `--to`, the sender is busy (16 sessions)
-  or refused the commit, the sender speaks no protocol version from 4 to
+  or refused the commit, the sender speaks no protocol version from 5 to
   the receiver's own; the relay's limits.
 - 5: the relay or the sender not reached within the open bound; the
   relay's certificate refused (`--cert-sha256`).
@@ -158,12 +158,15 @@ one. Version 5 was a hard cut before 1.0 (nfltr
 manifest below 5 with an answer naming both versions (exit 4, refused),
 and a sender answers a want outside 5 to its own the same way, so a v0.1
 receiver (version 4) ends at once with a protocol error (exit 6), never
-retrying. `make cross-version`
+retrying. v0.1.12 also took quiclink v0.8.0, which refuses a QUIC peer
+without ACK Frequency, so between v0.1.12 and an earlier end no direct
+path forms: with a sender with no account the receiver exits 12
+(`direct_required`). `make cross-version`
 (`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
 `make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
 signature and sum verified) against this checkout both ways on a private
-relay and requires those two refusals. Both ends need a relay that serves nf1 addresses (nfltr-relay
+relay and requires those refusals. Both ends need a relay that serves nf1 addresses (nfltr-relay
 `NF1_ENABLED`; `NF1_ANON_ENABLED` for senders with no account).
 
 Release files: `nfltr-send_<os>_<arch>` (`.exe` on Windows) for linux,

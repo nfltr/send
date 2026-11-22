@@ -127,8 +127,10 @@ peer to peer:
 - Anything that is not a regular file or a directory (a symlink, a device).
 - Two sources with the same base name.
 
-Every 1.x end speaks protocol version 4; the receiver takes any version
-from 4 to its own and both speak the lower. The sender refuses a machine
+Every 1.x end speaks protocol version 5; the receiver takes any version
+from 5 to its own and both speak the lower. v0.1.12 was a hard cut: it and
+v0.1.11 or earlier refuse each other at once (exit 4, 6 or, with a sender
+that has no account, 12), so update both ends. The sender refuses a machine
 certificate issued for another relay.
 
 ## Flags and exit codes
@@ -147,6 +149,10 @@ relay and `--relay`.
 `--relay-http` is a usage error, `$NFLTR_SEND_RELAY` is ignored):
 `--to <dir>`, `--address-file <file>` (default stdin), `--direct on|off`,
 `--cert-sha256 <sha256>`,
+`--connections <n>` (default 4, 1 to 16: sessions of the transfer at
+once, each on a connection of its own; on a fast link between machines
+with cores to spare 8 can be faster, [docs/scale.md](docs/scale.md)
+test 7),
 `--tries <n>` (default 10, each session resuming the last; after a
 commit whose session was cut before the sender read the answer, the
 remaining sessions tell the sender again, so a `--once` sender ends), `--json` (one

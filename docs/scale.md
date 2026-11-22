@@ -460,7 +460,7 @@ resumed files' BLAKE3 equals the sent file's.
 - **CPU, 10 GiB H to J**: the sender used 66 CPU s in 51 s, the receiver
   84 (1.3 and 1.6 of 4 vCPUs).
 
-## 7. Fast low-latency link (L to M, one Google Cloud zone, v0.1.10 and v0.1.11)
+## 7. Fast low-latency link (L to M, one Google Cloud zone, v0.1.10 to v0.1.12)
 
 Can one transfer fill a fast, short link? On 2026-11-21 the v0.1.10
 release ran between two Google Cloud n2-standard-8 machines (8 vCPU
@@ -533,11 +533,51 @@ direct, 3.26 against 3.74 relayed), so the two pairs differ by about
   packing alternate rather than overlap) and half for its congestion
   window. Concurrent transfers still add up.
 
-- **One transfer over several connections** (protocol 5, unreleased,
-  lane SPEED-MULTI): the receive is striped over `--connections` sessions,
-  each on a QUIC connection and socket of its own, so the pipeline above
-  runs once per connection. On the second pair (v0.1.10 run in turn on
-  the same machines, 3 runs each, medians, BLAKE3 equal in all 22 runs):
+**v0.1.12.** The receive is striped over `--connections` sessions
+(default 4), each on a QUIC connection and socket of its own, so the
+pipeline above runs once per connection. A third pair of machines of the
+same type in the same zone (RTT 0.12-0.15 ms, 15.6 Gbit/s on one TCP
+stream) ran v0.1.11 and v0.1.12 in turn, 3 runs each of 10 GiB direct,
+BLAKE3 equal in all 22 runs (also by `b3sum` on both machines, outside
+nfltr-send); v0.1.11 ran at 2.59 there (2.71 on the second pair):
+
+| run, third pair | path | v0.1.11 Gbit/s | v0.1.12 Gbit/s | CPU s per GiB, sender / receiver | BLAKE3 |
+|---|---|---|---|---|---|
+| 10 GiB, `--connections 4` (3 runs each) | direct | 2.57-2.66 (median 2.59) | 5.84-5.93 (median 5.88) | 7.1 / 8.3 to 7.2 / 7.8 | equal |
+| 10 GiB, `--connections 8` (3 runs) | direct | | 5.94-6.22 (median 6.22) | 7.2 / 7.8 | equal |
+| 100 GiB, `--connections 8` | direct | | 6.82 (+36.6 s to the address) | 7.8 / 7.9 | equal |
+| 10 GiB, `--connections 4` | relayed | 3.26 | 4.79 | 4.9 / 4.4 to 4.9 / 4.8 | equal |
+
+- **Direct is 2.3 times v0.1.11 at the default**, for about the same
+  sender CPU per byte and 6 % less at the receiver. Every direct run's receiver got one
+  UDP flow per connection, near-equal bytes on each.
+- **The receiver no longer reads the file back before the commit**: it
+  exits within 1 s of the last byte; a build of protocol 5 without that
+  (the rows below) spent about 2 s at 4-6 vCPUs with no traffic at the
+  end of each 10 GiB receive. Its receiver CPU per GiB is 13 % (at 4) and
+  17 % (at 8) lower than that build's, run in turn on this pair (5.43 and
+  5.28 Gbit/s there).
+- **8 connections are faster than 4 now** (6 %, on this pair; before the
+  receive changes they were not). The default stays 4: 8 is measured on
+  this pair of 8-vCPU machines only, not on a smaller receiver, a long
+  path or relayed. On a fast link between machines with cores to spare,
+  `--connections 8` is worth trying.
+- **The limit is the receiver's CPU**: 6.6-7.2 of its 8 vCPUs busy for
+  the whole transfer, the sender 3.6-5.3. Per byte the receiver decrypts
+  twice (QUIC's and the end-to-end TLS's AES-GCM), copies about three
+  times (the socket, the stream, the file) and hashes once (BLAKE3). No
+  socket or receive queue dropped a packet; the sender resent 0.31 % of
+  its packets, at most 0.15 % really lost.
+- **Fewer acknowledgements** (QUIC's ACK Frequency, quiclink v0.8.0): an
+  ACK every 10 packets, at once only for a packet more than 10 places
+  late. Measured only on a simulated path reordering 30 % of its packets
+  (0.39 -> 0.10 ACK packets per data packet, the same rate); the CPU it
+  saves on a real reordering path is not measured yet.
+
+Before the receive changes (a build of protocol 5 that still re-read the
+file before the commit, its writers sharing one file lock), on the
+second pair (v0.1.10 run in turn on the same machines, 3 runs each,
+medians, BLAKE3 equal in all 22 runs):
 
   | 10 GiB direct | Gbit/s | CPU s per GiB, sender / receiver |
   |---|---|---|
@@ -548,9 +588,9 @@ direct, 3.26 against 3.74 relayed), so the two pairs differ by about
   | `--connections 8` | 5.24 | 7.2 / 9.5 |
 
   100 GiB at 4 connections ran at 4.95 Gbit/s; relayed 10 GiB at 4
-  connections at 4.50 (3.27 at one). The receiver is then the limit: 7.0
-  of its 8 vCPUs busy (it verifies each chunk on arrival and hashes the
-  whole file again before the commit; its writers share one file lock),
+  connections at 4.50 (3.27 at one). The receiver was then the limit: 7.0
+  of its 8 vCPUs busy (it verified each chunk on arrival and hashed the
+  whole file again before the commit; its writers shared one file lock),
   the sender 3.4. On the build
   box, both ends in one process on 3 cores (`make bench-line`, 2 GiB, 6
   interleaved rounds, medians):
@@ -585,3 +625,6 @@ direct, 3.26 against 3.74 relayed), so the two pairs differ by about
   pair of machines in one zone in one afternoon; internal addresses only.
   Its v0.1.11 rows are 3 direct and 3 relayed runs of 10 GiB per version,
   one 100 GiB and the concurrent runs, on a second pair the same evening.
+  Its v0.1.12 rows are 3 direct runs of 10 GiB per version and
+  `--connections`, one 100 GiB and one relayed 10 GiB per version, on a
+  third pair on 2026-11-22.
