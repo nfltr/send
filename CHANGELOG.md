@@ -37,7 +37,14 @@
   10 packets and only a packet more than 10 places late at once. On a
   simulated path that reorders 30 % of its packets, 0.39 -> 0.10 ACK
   packets per data packet at the same rate; the CPU this saves on a real
-  reordering path is not measured yet.
+  reordering path is not measured yet. 
+  Measured after the release on a real long path (Helsinki to Singapore,
+  260 ms, 10 GiB, 3 runs each): it did not reduce acknowledgements.
+  v0.1.11 already sent about one ACK per 7 data packets there; v0.1.12
+  on one connection sent about one per 3 in two of three runs, for more
+  CPU. With the default 4 connections ACKs were near v0.1.11's and the
+  transfer ran 3.1 times as fast (1.09 against 0.35 Gbit/s). The cause
+  is being worked on.
 - **Hard cut: both ends need v0.1.12.** v0.1.11 and earlier and this
   release refuse each other, neither retries, nothing is written:
   - a v0.1.12 receiver of an older sender exits 4 (`refused`):
