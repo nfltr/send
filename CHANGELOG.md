@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.14
 
 - **A receiver uses less CPU on Linux.** It writes each whole 256 KiB chunk
   straight to the disk (O_DIRECT), not through the page cache, and reads
@@ -10,7 +10,8 @@
   1.7 s sooner (nothing left to flush before the commit). A file system
   that refuses O_DIRECT is written through the page cache as before.
   blake3 v1.5.1 verifies each chunk group in place, not through a copy
-  (5 % less time per 256 KiB group).
+  (5 % less time per 256 KiB group), and pathswitch v0.1.5 reads each
+  DATA payload in place, not through a frame buffer.
 - **BLAKE3 hashes and verifies faster on amd64.** blake3 v1.5.2 hashes a
   256 KiB chunk group's chunks first and then its parents a level at a
   time (every SIMD lane busy), and its amd64 kernels load and transpose
@@ -21,6 +22,57 @@
   receiver's BLAKE3 took 37 % less CPU on n2 and 20 % less on c3, about
   1 % of the receiver's whole CPU (QUIC and the copies are most of it);
   the sender's tree build hashes the same way (3 % less sender CPU).
+
+- **One direct connection on a long path is no longer held at 0.35
+  Gbit/s.** A direct session's window now grows from 16 MiB to 64 MiB
+  while the receiver keeps up (relay client v0.25.2, quiclink v0.10.0),
+  and the QUIC fork lets 65,536 packets be in flight (was 10,000, 14.5 MB)
+  with as many gaps in a stream (QUIC fork v0.63.1-nfltr.11). *Measured on
+  the candidate*, Helsinki to Singapore (260 ms), 10 GiB direct: 0.36 ->
+  0.99 Gbit/s with 1 connection, 1.20 -> 1.71 Gbit/s with 4 (medians).
+  A direct session can now hold more memory: up to about 64 MiB in flight
+  at the sender and 160 MiB buffered at the receiver; on that path, with
+  4 connections, peak RSS rose from 0.3-0.4 GB to 0.9-1.5 GB at the
+  sender and from 0.2-0.3 GB to 0.65-0.8 GB at the receiver.
+- **Late packets are acknowledged, not sent again.** On a path with more
+  than 64 holes open at once, the receiving end's ACK dropped its lowest
+  ranges, so a packet arriving late below them was never acknowledged and
+  its sender declared it lost and resent it. An ACK now reports first the
+  ranges holding packets received since the last ACK. *Measured on the
+  candidate*, Helsinki to Singapore, 4 connections: 0.8-3.3 % of the
+  packets resent -> about 0.01 %, 6 % less CPU per GiB on the sender and
+  3 % less on the receiver, the rate unchanged within the path's spread.
+- **No drops in the sender's own queue.** The QUIC fork asked a 7 MiB
+  socket send buffer, so one connection queued about 5,000 packets (40-55
+  ms) in the host before the network card, and Linux's default qdisc
+  (fq_codel) dropped whole batches of 44 packets; it now asks 256 KiB (a
+  larger buffer the host gives is kept). *Measured on the candidate*,
+  Helsinki to Singapore: with 4 connections 279 qdisc drops per run -> 0
+  and 0.11-0.12 % of packets resent -> 0.01-0.02 % at the same rate, but
+  7 % more sender CPU per GiB (the send waits on a full socket); with 1
+  connection and the larger windows 0.74 -> 1.25 Gbit/s, 0.25 % resent
+  -> 0, 16 % less sender CPU per GiB.
+- **ACK processing no longer slows with the packets in flight.** The QUIC
+  fork's ACK and loss detection walked every packet in flight; they now
+  walk only the packets acknowledged or declared lost (the fork's
+  benchmark at 50,000 in flight: 2.5 -> 0.3 us per packet). On the real
+  path above the CPU per GiB did not change outside the run-to-run spread.
+- **A relayed session's window grows with the path** (link v0.14.0): it
+  doubles, up to 16 MiB per session and 64 MiB per connection, while its
+  sender waits for credit and its reader keeps up; before, a relayed
+  session moved one fixed window per round trip. It needs the relay on
+  link v0.14.0 or later too; with an older relay the windows stay fixed,
+  as before. Link's own benchmark (one session over 20 ms): a 1 MiB
+  window 44 -> 278 MB/s; not measured with nfltr-send.
+- **A relay dial that fails before any byte is tried again** (relay client
+  v0.25.1): a connection to the relay that failed before it sent anything
+  (for example "no route to host" just after a network drop) is asked
+  again within the open's bound, instead of exit 5 at once.
+- Protocol 5, as v0.1.13; link, quiclink and pathswitch change nothing on
+  the wire between the two ends.
+- Built on link v0.14.0, pathswitch v0.1.5, quiclink v0.10.0 (QUIC fork
+  v0.63.1-nfltr.11), blake3 v1.5.2, relay client v0.25.2, relay proto
+  v0.22.3 and relay-core v0.19.8.
 
 ## v0.1.13
 
