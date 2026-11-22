@@ -31,6 +31,11 @@
   no immediate acknowledgement of reordered packets (quiclink v0.9.0, its
   QUIC fork v0.63.1-nfltr.9). This aims to cut acknowledgements and
   their CPU on such paths; it is not measured on a real path yet.
+  *Measured 2026-11-22* (docs/scale.md, test 8): from Helsinki to
+  Singapore (260 ms) about 0.09 ACKs per data packet at 1 and 4
+  connections, reordering forcing 0.04 % of them; 10 GiB at 1.21 Gbit/s
+  with 4 connections, 100 GiB at 1.36 Gbit/s; CPU per GiB 8-17 % lower
+  at both ends than v0.1.12 on the same pair.
 - Built on link v0.13.3, pathswitch v0.1.4, quiclink v0.9.0, relay client
   v0.25.0, relay proto v0.22.2 and relay-core v0.19.6.
 

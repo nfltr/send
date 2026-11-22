@@ -19,7 +19,10 @@ Google Cloud machines (["Between providers"](#6-between-providers-v019-and-v0110
 its 10 GiB and 100 GiB runs from Helsinki to Singapore were repeated
 later that day on the v0.1.10 release. Test 7, the same day, is v0.1.10
 on a fast short link inside one Google Cloud zone, repeated on v0.1.11
-(["Fast low-latency link"](#7-fast-low-latency-link-l-to-m-one-google-cloud-zone-v0110-and-v0111)).
+(["Fast low-latency link"](#7-fast-low-latency-link-l-to-m-one-google-cloud-zone-v0110-and-v0111)). Test 8, on
+2026-11-22, is the v0.1.13 release on both: a fourth pair in that zone,
+with the relay's latency, and Helsinki to Singapore
+(["v0.1.13"](#8-v0113-one-google-cloud-zone-and-helsinki-to-singapore)).
 
 ## What limited a transfer
 
@@ -605,6 +608,87 @@ medians, BLAKE3 equal in all 22 runs):
   Gbit/s), so the rows show the cost per byte stays flat with K, not the
   gain; the gain needs two machines like L and M.
 
+## 8. v0.1.13: one Google Cloud zone, and Helsinki to Singapore
+
+The v0.1.13 release (direct paths seal each byte once; ACK Frequency asked
+again on a deeply reordering path), its signature and sum checked on each
+machine, with nfltr and nfltr-relay v2.1.79. BLAKE3 equal in every run, also
+by `b3sum` on both machines, outside nfltr-send.
+
+**One zone.** A fourth pair of n2-standard-8 machines in us-central1-a (same
+CPU model, four local NVMe SSDs in RAID 0 each), the private relay on a
+third machine of the same type. Before any run: ping 0.25 ms, iperf3 TCP 1
+stream 15.5 Gbit/s, UDP 1 stream 7.03 Gbit/s (`-l 1400`), 4 streams 8.0 at
+0.01 % loss; each relay leg 15.2 Gbit/s TCP.
+
+| run | path | connections | Gbit/s | CPU s per GiB, sender / receiver | cores, sender / receiver |
+|---|---|---|---|---|---|
+| 10 GiB (3 runs) | direct | 4 | 5.81, 6.00, 6.10 (median 6.00) | 6.67 / 7.49 | 3.39 / 5.23 |
+| 10 GiB (3 runs) | direct | 8 | 6.20, 6.21, 6.18 (median 6.20) | 6.95 / 7.47 | 3.57 / 5.40 |
+| 100 GiB | direct | 8 | 6.87 | 7.59 / 7.56 | 4.63 / 6.05 |
+| 10 GiB (3 runs) | relayed | 4 | 4.66, 4.65, 4.68 (median 4.66) | 4.22 / 4.82 | 1.84 / 2.62 |
+
+- Direct confirmed per connection at the receiver: one UDP flow per
+  connection from the sender's one socket; relayed runs had none. UDP
+  socket drops, `RcvbufErrors` and `InErrors` 0 in every run.
+- **The limit is the receiver's CPU**: 6.80 of its 8 vCPUs busy in the
+  100 GiB run (the sender 4.95); peak wire 7.9-8.1 Gbit/s direct, 5.6
+  relayed. The 10 GiB times leave out about 3.8 s from the sender's start
+  to the address (its hash tree) and include about 2 s of fixed start and
+  commit, so the 100 GiB row is the steady rate.
+- **The relay** spent 23.3 CPU s per relayed 10 GiB: about 2.3 CPU s per
+  GiB, about 1.3 cores at 4.66 Gbit/s.
+
+Relay latency: a 1-byte request and 1-byte answer every 5 ms, each client
+its own `nfltr cat pipe --address-file` session (`--direct on` or `off`)
+to a TCP echo served by `nfltr cat serve --address --direct on`, 3 s of
+warm-up dropped. Idle: 2 runs per case; under load: during a relayed
+10 GiB transfer on the same machines, measured only while the sender sent
+at 2 Gbit/s or more (4.4-5.4 Gbit/s in every window), 2 runs per case.
+
+| case | relayed p50 / p99 ms | direct p50 / p99 ms | relay adds p50 / p99 ms | samples per path |
+|---|---|---|---|---|
+| idle, 1 client | 0.541 / 0.695 | 0.455 / 0.583 | +0.09 / +0.11 | 6000 |
+| idle, 16 clients | 0.453 / 0.870 | 0.414 / 0.625 | +0.04 / +0.25 | 32000 |
+| relayed 10 GiB running, 1 client | 0.653 / 13.29 | 0.666 / 12.93 | -0.01 / +0.36 | 2400 |
+| relayed 10 GiB running, 16 clients | 0.630 / 13.51 | 0.581 / 12.71 | +0.05 / +0.80 | 19200 |
+
+Under load the p99 is about 13 ms on the direct path too, which shares
+only the machines' NICs and CPUs with the relayed transfer, not the relay:
+that tail is the busy machines' queueing. The transfer ran at 4.52-4.67
+Gbit/s while measured, the same as without the probes. The 16-client idle
+case needed the relay's anonymous caps for address clients raised (16
+clients from one IP plus the previous case's closing sessions exceed
+`nf1.source_max` 16 and the source and address rates); the table uses only
+the rerun with them raised.
+
+**Helsinki to Singapore.** A rented machine with 4 dedicated vCPUs in
+Helsinki to a Google Cloud c3-standard-4-lssd in asia-southeast1-b, RTT
+260 ms, the private relay on the sender. Every run direct. 10 GiB cases
+interleaved, 2 runs each; one 100 GiB run.
+
+| run | connections | Gbit/s | ACKs per data packet (wire) | CPU s per GiB, sender / receiver | wire loss |
+|---|---|---|---|---|---|
+| 10 GiB | 1 | 0.362, 0.342 | 0.089, 0.086 | 6.67 / 8.71, 7.03 / 9.25 | 0.000 %, 0.009 % |
+| 10 GiB | 4 | 1.214, 1.204 | 0.087, 0.097 | 6.47 / 8.04, 6.65 / 8.20 | 0.002 %, 0.002 % |
+| 100 GiB | 4 | 1.357 | 0.100 | 7.58 / 8.84 | 0.006 % |
+
+- **About 0.09 acknowledgements per data packet**: the count threshold's
+  rate (one per about 10 packets). A receiver built with
+  `-tags quicacktrace` (the same release; the trace costs about 6 CPU s
+  per GiB and batches its ACKs, so it gives causes, not rates) shows 117
+  of 260,178 ACKs forced by reordering at 4 connections and 15 of 282,055
+  at 1: every data connection applied the sender's Reordering Threshold 0
+  within its first 1,670-4,749 packets.
+- **One connection is held to one BBR connection's rate** at 260 ms (about
+  0.35 Gbit/s); 4 connections carry 1.2-1.36.
+- UDP receive-buffer and input errors 0 everywhere.
+
+On v0.1.12, interleaved with the rows above on the same pair: 0.13-0.24
+ACKs per data packet (at 4 connections 95 % of the traced ACKs forced by
+reordering), 0.335-0.354 Gbit/s at 1 connection and 1.08-1.19 at 4;
+v0.1.13's CPU per GiB is 8-17 % lower at both ends (medians).
+
 ## Limits
 
 - Each configuration ran one at a time, on cloud machines; B's vCPUs are
@@ -628,3 +712,7 @@ medians, BLAKE3 equal in all 22 runs):
   Its v0.1.12 rows are 3 direct runs of 10 GiB per version and
   `--connections`, one 100 GiB and one relayed 10 GiB per version, on a
   third pair on 2026-11-22.
+- Test 8 is 3 runs per 10 GiB case and one 100 GiB in one zone, on one
+  pair on one morning, and 2 runs per 10 GiB case and one 100 GiB from
+  Helsinki to Singapore on the same day; IPv4 and internal addresses only
+  in the zone.
