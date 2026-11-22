@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A receiver uses less CPU on Linux.** It writes each whole 256 KiB chunk
+  straight to the disk (O_DIRECT), not through the page cache, and reads
+  each chunk from the session straight into its buffer. Between two 8-vCPU
+  cloud machines in one zone, a 100 GiB direct transfer took 11 % less CPU
+  per GiB on the receiver (7.06 -> 6.27 CPU-s), and a 10 GiB one ended
+  1.7 s sooner (nothing left to flush before the commit). A file system
+  that refuses O_DIRECT is written through the page cache as before.
+
 ## v0.1.13
 
 - **A direct transfer uses less CPU.** On a direct path each byte is now
