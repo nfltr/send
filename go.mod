@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/nfltr/blake3 v1.5.2
-	github.com/nfltr/relay-core v0.19.7
-	github.com/nfltr/relay/client v0.25.1
+	github.com/nfltr/relay-core v0.19.8
+	github.com/nfltr/relay/client v0.25.2
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.49.0
 )
@@ -24,11 +24,11 @@ require (
 	github.com/jackpal/gateway v1.2.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/nfltr/link v0.13.3 // indirect
-	github.com/nfltr/link/pathswitch v0.1.4 // indirect
-	github.com/nfltr/link/peerlink/quiclink v0.9.0 // indirect
-	github.com/nfltr/quic-go v0.63.1-nfltr.9 // indirect
-	github.com/nfltr/relay/proto v0.22.2 // indirect
+	github.com/nfltr/link v0.14.0 // indirect
+	github.com/nfltr/link/pathswitch v0.1.5 // indirect
+	github.com/nfltr/link/peerlink/quiclink v0.10.0 // indirect
+	github.com/nfltr/quic-go v0.63.1-nfltr.11 // indirect
+	github.com/nfltr/relay/proto v0.22.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pires/go-proxyproto v0.16.0 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
