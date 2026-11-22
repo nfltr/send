@@ -162,8 +162,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/nfltr/blake3 v1.5.0 h1:W5r4dN8Hk+RE0h52vWsqhxPE4OBm95LhnIVQgys+J04=
-github.com/nfltr/blake3 v1.5.0/go.mod h1:uXDwrKAWjffh6H51Xg1D3hAOtjrcSyAQY/1I9ghwmLk=
+github.com/nfltr/blake3 v1.5.1 h1:4kdAlqq1vzfYM+hZqghpPfLrbA0qaeFOygfklgD5GxQ=
+github.com/nfltr/blake3 v1.5.1/go.mod h1:uXDwrKAWjffh6H51Xg1D3hAOtjrcSyAQY/1I9ghwmLk=
 github.com/nfltr/link v0.13.3 h1:tlHNm6Mwq22Bhr4k/MIO+1YadZ1oLo8dlCuovyJeBmg=
 github.com/nfltr/link v0.13.3/go.mod h1:LLhvrzaG7o8p0NOndBo6ftqgp52EEUwxblwPyf9kyrc=
 github.com/nfltr/link/pathswitch v0.1.4 h1:8bqDCoKYLb6OpwW1Eyoh/AOU6tt1gA3JPl7jyi/uHTo=

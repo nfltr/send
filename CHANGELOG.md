@@ -9,6 +9,8 @@
   per GiB on the receiver (7.06 -> 6.27 CPU-s), and a 10 GiB one ended
   1.7 s sooner (nothing left to flush before the commit). A file system
   that refuses O_DIRECT is written through the page cache as before.
+  blake3 v1.5.1 verifies each chunk group in place, not through a copy
+  (5 % less time per 256 KiB group).
 
 ## v0.1.13
 
