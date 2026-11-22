@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nfltr/send/internal/xfer/verified"
@@ -155,6 +156,7 @@ type receiver struct {
 	trees    map[int][]byte      // entry -> its tree, once a session read it whole
 	fresh    map[int]*fresh      // entry -> its chunks this receive verified and wrote
 	wlocks   map[int]*sync.Mutex // entry -> its writers' turn (writeChunk)
+	directs  atomic.Int64        // chunks written directly (writeChunk, direct)
 	written  int64               // file bytes written by this receive
 	progress Progress
 }
@@ -448,6 +450,7 @@ func (r *receiver) read(s *sess) error {
 		c     = s.c
 		buf   []byte
 		f     *os.File
+		dio   direct        // f's direct writes
 		cur   = -1          // the entry being received
 		left  int64         // its bytes still to come
 		todo  [][2]int64    // its chunks still to come, in runs
@@ -465,9 +468,13 @@ func (r *receiver) read(s *sess) error {
 			r.trCut(s)
 		}
 	}()
+	closeOut := func() {
+		_ = f.Close()
+		dio.close()
+	}
 	fail := func(format string, args ...any) error {
 		if f != nil {
-			_ = f.Close()
+			closeOut()
 		}
 		return fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)
 	}
@@ -478,17 +485,17 @@ func (r *receiver) read(s *sess) error {
 		q = q[1:]
 		if !<-pd.ok {
 			r.trBad(s, pd.p, pd.off)
-			_ = f.Close()
+			closeOut()
 			f = nil
 			return fmt.Errorf("%q: the chunk at %d is %w", r.m.Entries[cur].Path, pd.off, ErrUnverified)
 		}
-		if err := r.writeChunk(cur, f, pd.p, pd.off); err != nil {
-			_ = f.Close()
+		if err := r.writeChunk(cur, f, &dio, pd.p, pd.off); err != nil {
+			closeOut()
 			f = nil
 			return err
 		}
 		if err := r.wroteChunk(cur, pd.off/maxData, f); err != nil {
-			_ = f.Close()
+			closeOut()
 			f = nil
 			return err
 		}
@@ -508,7 +515,7 @@ func (r *receiver) read(s *sess) error {
 			for len(q) > 0 && keep() == nil {
 			}
 			if f != nil {
-				_ = f.Close()
+				closeOut()
 			}
 			return noEOF(err)
 		}
@@ -532,6 +539,9 @@ func (r *receiver) read(s *sess) error {
 			if f, err = r.open(st.Index, st.Kept); err != nil {
 				return err
 			}
+			if e.Size >= maxData { // a whole chunk to write
+				dio = openDirect(r.sr, e.Path)
+			}
 			cur, left, off, got, wrote = st.Index, 0, 0, 0, false
 			for _, t := range todo {
 				left += min(t[1]*maxData, e.Size) - t[0]*maxData
@@ -554,7 +564,7 @@ func (r *receiver) read(s *sess) error {
 			}
 			if got == whole {
 				if tr.Outboard, err = r.keepTree(cur, tr.Outboard); err != nil {
-					_ = f.Close()
+					closeOut()
 					return err
 				}
 			}
@@ -596,6 +606,7 @@ func (r *receiver) read(s *sess) error {
 			if wrote {
 				err = syncFile(f) // on stable storage before the commit begins (syncStage)
 			}
+			dio.close()
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -614,7 +625,7 @@ func (r *receiver) read(s *sess) error {
 			var a Answer
 			_ = json.Unmarshal(p, &a)
 			if f != nil {
-				_ = f.Close()
+				closeOut()
 				f = nil
 			}
 			return refused{a}
@@ -684,8 +695,9 @@ func (r *receiver) open(i int, kept bool) (*os.File, error) {
 // inode's lock in the kernel (a buffered write takes it exclusively: ext4,
 // xfs, tmpfs). BenchmarkStripedWrite (lane SPEED-RECV, nfltr
 // docs/performance-ledger.md): 4 writers, ext4, 1.47 -> 0.58 CPU s per GiB
-// with preallocate.
-func (r *receiver) writeChunk(i int, f *os.File, p []byte, off int64) error {
+// with preallocate. A whole chunk goes through d, bypassing the page
+// cache, where the file system takes direct writes (direct; Linux).
+func (r *receiver) writeChunk(i int, f *os.File, d *direct, p []byte, off int64) error {
 	r.mu.Lock()
 	if r.wlocks == nil {
 		r.wlocks = map[int]*sync.Mutex{}
@@ -698,6 +710,10 @@ func (r *receiver) writeChunk(i int, f *os.File, p []byte, off int64) error {
 	r.mu.Unlock()
 	m.Lock()
 	defer m.Unlock()
+	if d.writeAt(p, off) {
+		r.directs.Add(1)
+		return nil
+	}
 	_, err := f.WriteAt(p, off)
 	return err
 }

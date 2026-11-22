@@ -145,14 +145,16 @@ type Answer struct {
 	Bytes   int64  `json:"bytes"`
 }
 
-// conn frames one session.
+// conn frames one session. It reads unbuffered: a data frame's payload is
+// read from rw straight into its chunk's buffer, not copied through a
+// bufio.Reader first (lane RECVCPU; TestConnReadsPayloadInPlace).
 type conn struct {
-	r *bufio.Reader
+	r io.Reader
 	w *bufio.Writer
 }
 
 func newConn(rw io.ReadWriter) *conn {
-	return &conn{r: bufio.NewReaderSize(rw, 256<<10), w: bufio.NewWriterSize(rw, 256<<10)}
+	return &conn{r: rw, w: bufio.NewWriterSize(rw, 256<<10)}
 }
 
 func (c *conn) write(t byte, p []byte) error {
