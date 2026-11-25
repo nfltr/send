@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.15
 
 - **Both ends show their progress.** A transfer of minutes printed
   nothing until its end. On a terminal each end now redraws one line each
