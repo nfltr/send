@@ -153,7 +153,9 @@ protocol: a receive striped over up to `--connections` sessions at once
 (`spec/Stripe.tla`). The sender names its highest version in the
 manifest; the receiver takes any from 5 to its own (`xfer.Version`),
 names the lower of the two in its answer (the want), and both speak that
-one. Version 5 was a hard cut before 1.0 (nfltr
+one. A want may carry `held`, the file bytes the receiver's stage held at
+the receive's start, read by the sender for its progress line only; an
+end that sends or reads none speaks version 5 all the same. Version 5 was a hard cut before 1.0 (nfltr
 `docs/decisions/send-line-rate-2026-11-21.md`): a receiver refuses a
 manifest below 5 with an answer naming both versions (exit 4, refused),
 and a sender answers a want outside 5 to its own the same way, so a v0.1

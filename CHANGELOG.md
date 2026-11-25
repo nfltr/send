@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **Both ends show their progress.** A transfer of minutes printed
+  nothing until its end. On a terminal each end now redraws one line each
+  second: bytes received (sent) of the total, the share, the rate, the
+  time left, the path (direct or relayed) and the sessions open; off a
+  terminal it prints that line every 30 s; the receiver with `--json`
+  nothing. What a resumed receive already held counts as done at both
+  ends: the receiver names it in its want (`held`, read for the progress
+  only; an older end sends or reads none, and its sender counts only what
+  it sent). The sender's line runs while a receiver is connected; two
+  receivers at once share it.
+- **A cut session reads as what it is.** The sender logged a session of a
+  several-session transfer that was cut (the receiver drops a slow one, or
+  a network fails under it) as `WARN transfer ended ... session reset by
+  the peer`, which read as a failed transfer while the receiver fetched
+  that part again. It now logs `INFO one of the receiver's N sessions
+  ended after X bytes; the receiver resumes its part`; `WARN transfer
+  ended` is kept for a transfer that ended. The line for each session
+  that carried its part ("part of the transfer in") is debug only. The
+  sender's `sent ...` line adds the transfer's rate and path, its time
+  now from the transfer's first session (was: the last session's). The
+  sender's messages go through one text log (`level=INFO msg=...`, as
+  the relay SDK's already did) that clears the progress line first.
+
 ## v0.1.14
 
 - **A receiver uses less CPU on Linux.** It writes each whole 256 KiB chunk

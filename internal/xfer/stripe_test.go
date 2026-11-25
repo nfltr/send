@@ -25,6 +25,8 @@ type striped struct {
 	sent  []int64
 	parts int // sessions answered Part
 	wg    sync.WaitGroup
+	helds []int64      // each want's held (Serving.Want)
+	fed   atomic.Int64 // the bytes Serving.Sent counted
 }
 
 func (x *striped) open(context.Context) (Session, error) {
@@ -38,7 +40,9 @@ func (x *striped) open(context.Context) (Session, error) {
 		w = x.wrap(n, a)
 	}
 	x.wg.Go(func() {
-		ans, sent, _ := x.s.Serve(w)
+		ans, sent, _ := x.s.ServeWith(w, Serving{
+			Want: func(held int64) { x.mu.Lock(); x.helds = append(x.helds, held); x.mu.Unlock() },
+			Sent: func(n int64) { x.fed.Add(n) }})
 		_ = a.Close()
 		x.mu.Lock()
 		x.sent[n-1] = sent
@@ -241,9 +245,28 @@ func TestStripedReceiveResumesAfterAStop(t *testing.T) {
 		t.Fatalf("stopped receive: %v, want context.Canceled", err)
 	}
 	y := &striped{t: t, s: s}
-	a, err := y.receive(t.Context(), dst, 3)
+	var total, held, wrote int64
+	first, _ = y.open(t.Context())
+	a, err := ReceiveFrom(t.Context(), first, Receiving{Dir: dst, K: 3, Open: y.open,
+		Start: func(t, h int64) { total, held = t, h }, Progress: func(n int64) { wrote = n }})
+	y.wg.Wait()
 	if err != nil || !a.OK {
 		t.Fatalf("resumed receive %+v, %v", a, err)
+	}
+	// Start: the offer's bytes and those verified on the stage, the rest
+	// what this receive wrote (cmd's progress line, lane SENDUX)
+	if total != 30*maxData+5 || held == 0 || held != total-y.total() || held+wrote != total {
+		t.Fatalf("Start(%d, %d), %d written, %d sent: want the offer's bytes and what the stage held", total, held, wrote, y.total())
+	}
+	// the sender's progress: each want carries what the stage held, and
+	// Sent counts what Serve sent
+	for _, h := range y.helds {
+		if h != held {
+			t.Fatalf("wants' held %v, want %d each", y.helds, held)
+		}
+	}
+	if len(y.helds) == 0 || y.fed.Load() != y.total() {
+		t.Fatalf("%d wants, Sent counted %d of %d sent", len(y.helds), y.fed.Load(), y.total())
 	}
 	if got := y.total(); got > 30*maxData+5-written.Load()+5 || got >= 30*maxData {
 		t.Fatalf("resumed sent %d of %d, %d written before: want only what was not", got, 30*maxData, written.Load())

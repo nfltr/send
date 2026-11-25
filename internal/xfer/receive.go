@@ -159,6 +159,7 @@ type receiver struct {
 	directs  atomic.Int64        // chunks written directly (writeChunk, direct)
 	written  int64               // file bytes written by this receive
 	progress Progress
+	held     int64 // the file bytes the stage held verified at the start (want.Held)
 }
 
 // intentName is the intent record's name in the stage: the offer's

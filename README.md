@@ -14,6 +14,25 @@ receiver$ nfltr-send receive --to ~/Downloads < address
 received 1 file, 1073741824 bytes in 4.5 s (237 MB/s), path direct
 ```
 
+While it runs each end shows its progress, on a terminal one line
+redrawn each second (off a terminal a line every 30 s; the receiver's
+`--json` none); what a resumed receive already held counts as done:
+
+```console
+received 0.40 of 1.07 GB (37 %), 236 MB/s, 3 s left, path direct, 4 sessions
+sent 0.40 of 1.07 GB (37 %), 236 MB/s, 3 s left, path direct, 4 sessions
+```
+
+The sender's line starts when a receiver connects (until then the
+address is its last line) and gives way to `sent 1 file, 1073741824
+bytes (268435456 this session) in 4.6 s (233 MB/s), path direct`. A
+session of the transfer that is cut (the receiver drops a slow one, or a
+network fails under it) is no failed transfer: the sender logs
+`level=INFO msg="one of the receiver's 4 sessions ended after ... bytes;
+the receiver resumes its part"`, and the receiver fetches that part on
+another session. `level=WARN msg="transfer ended"` is a transfer that
+ended. Two receivers of one address at once share the sender's one line.
+
 That run, and the numbers below, had both ends on one Mac (Apple M5,
 10 cores) over loopback through a local relay: the program's own ceiling,
 not a network's rate. The receiver's time runs from its start to the

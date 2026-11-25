@@ -103,9 +103,22 @@ func (s *Source) Files() (n int, bytes int64) {
 	return n, bytes
 }
 
+// Serving reports a session's progress; a nil func: none.
+type Serving struct {
+	// Want gets the want's Held: what the receiver's stage held.
+	Want func(held int64)
+	// Sent gets the file bytes of each data frame written.
+	Sent func(n int64)
+}
+
 // Serve sends s over one session and returns the receiver's answer.
 // sent counts the file bytes written to the session (a resume sends less).
 func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
+	return s.ServeWith(rw, Serving{})
+}
+
+// ServeWith is Serve reporting its progress to o.
+func (s *Source) ServeWith(rw io.ReadWriter, o Serving) (a Answer, sent int64, err error) {
 	c := newConn(rw)
 	if err := c.writeJSON(frameManifest, s.Manifest); err != nil {
 		return a, 0, err
@@ -137,6 +150,9 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 		_ = c.flush()
 		return a, 0, err
 	}
+	if o.Want != nil {
+		o.Want(w.Held)
+	}
 	parts := map[int]Part{}
 	for _, p := range w.Parts {
 		parts[p.Index] = p
@@ -146,7 +162,7 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 		if e.Dir {
 			continue
 		}
-		n, err := s.sendFile(c, i, e, parts[i], buf)
+		n, err := s.sendFile(c, i, e, parts[i], buf, o.Sent)
 		sent += n
 		if err != nil {
 			return a, sent, err
@@ -169,7 +185,7 @@ func (s *Source) Serve(rw io.ReadWriter) (a Answer, sent int64, err error) {
 // part's runs when they are valid (the receiver verified them; spec Open),
 // else every chunk, then its end. The receiver verifies each chunk
 // against the manifest's root (spec Send, Bad).
-func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, error) {
+func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte, sent func(int64)) (int64, error) {
 	f, err := os.Open(s.files[i])
 	if err != nil {
 		return 0, err
@@ -210,6 +226,9 @@ func (s *Source) sendFile(c *conn, i int, e Entry, p Part, buf []byte) (int64, e
 				return n, err
 			}
 			n += int64(k)
+			if sent != nil {
+				sent(int64(k))
+			}
 		}
 	}
 	if err := unchanged(f, e); err != nil {

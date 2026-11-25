@@ -287,7 +287,6 @@ func sendCmd(ctx context.Context, args []string) int {
 	default:
 		return fail(1, err)
 	}
-	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	return serve(ctx, cfg, mode, m, src, *once, os.Stdout, os.Stderr)
 }
 
@@ -299,6 +298,11 @@ func sendCmd(ctx context.Context, args []string) int {
 // paths only.
 func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *machine, src *xfer.Source, once bool, out, errw io.Writer) int {
 	anon := m == nil
+	files, bytes := src.Files()
+	tr := newSending(errw, isTerminal(errw), bytes)
+	errw = tr.m // a message clears the progress line first
+	log := slog.New(slog.NewTextHandler(errw, nil))
+	cfg.Logger = slog.New(slog.NewTextHandler(errw, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	if !anon {
 		cfg.ClientCert = m.cert
 		go m.run(ctx, cfg.Logger)
@@ -321,7 +325,6 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 		return failTo(errw, false, codeOr(err, nfnet.CodeUnreachable), relayHint(enrolHint(err, anon), cfg.AgentRelay))
 	}
 	defer ln.Close() //nolint:errcheck
-	files, bytes := src.Files()
 	fmt.Fprintf(errw, "serving %d %s, %d bytes; give the receiver this address (a secret: whoever holds it can receive):\n", files, filesWord(files), bytes)
 	fmt.Fprintln(out, ln.Address())
 	// A --once transfer ends the listener itself; done closes once that
@@ -334,6 +337,15 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 	var end sync.Once
 	done := make(chan struct{})
 	sessions := newLimiter(maxSessions)
+	tr.m.run(progressEvery(tr.m.tty))
+	defer tr.m.stop()
+	// began is the start of the transfer under way: its first session's.
+	// ponytail: one transfer at a time; with two receivers at once a
+	// transfer's time starts at the other's first session.
+	var began struct {
+		sync.Mutex
+		t time.Time
+	}
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -352,28 +364,35 @@ func serve(ctx context.Context, cfg nfnet.Config, mode nfnet.DirectMode, m *mach
 		}
 		sessions.take(c, func(c net.Conn) {
 			defer c.Close() //nolint:errcheck
-			t0 := time.Now()
-			a, sent, err := src.Serve(c)
-			switch {
-			case err != nil && anon && nfnet.CodeOf(err) == nfnet.CodeDirectRequired:
-				slog.Warn("transfer ended: no direct path to the receiver; relaying it needs this machine's account (`nfltr config login`)", "sent", sent, "err", err)
-			case err != nil:
-				slog.Warn("transfer ended", "sent", sent, "err", err)
-			case a.Part:
-				slog.Info("part of the transfer in (another session gets the final answer)", "sent", sent, "seconds", time.Since(t0).Seconds())
-			case !a.OK:
-				slog.Warn("receiver refused", "reason", a.Message)
-			default:
-				slog.Info("transfer done", "files", a.Files, "bytes", a.Bytes, "sent", sent, "seconds", time.Since(t0).Seconds())
-				fmt.Fprintf(errw, "sent %d %s, %d bytes (%d this session) in %.1f s\n", a.Files, filesWord(a.Files), a.Bytes, sent, time.Since(t0).Seconds())
-				if once {
-					end.Do(func() {
-						_ = c.Close() // this session's clean end first: the listener's Close resets what is open
-						ending.Store(true)
-						_ = ln.Close()
-						close(done)
-					})
-				}
+			began.Lock()
+			if began.t.IsZero() {
+				began.t = time.Now()
+			}
+			began.Unlock()
+			path := func() string { return "" }
+			if nc, ok := c.(*nfnet.Conn); ok {
+				path = func() string { return nc.Info().Path }
+			}
+			var wanted bool
+			a, sent, err := src.ServeWith(c, xfer.Serving{
+				Want: func(held int64) { wanted = true; tr.want(held, path) },
+				Sent: tr.sent})
+			s := served{a: a, sent: sent, err: err, anon: anon, open: len(sessions.slots), path: path()}
+			complete := err == nil && !a.Part && a.OK
+			tr.end(wanted, complete)
+			if complete {
+				began.Lock()
+				s.took, began.t = time.Since(began.t), time.Time{}
+				began.Unlock()
+			}
+			report(log, errw, s)
+			if complete && once {
+				end.Do(func() {
+					_ = c.Close() // this session's clean end first: the listener's Close resets what is open
+					ending.Store(true)
+					_ = ln.Close()
+					close(done)
+				})
 			}
 		})
 	}
@@ -487,11 +506,22 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 			onPath(e.Path, e.Reason)
 		}
 	}
-	fail := func(code int, err error) int { return failTo(w, asJSON, code, err) }
+	var d *dialers
+	m := newMeter(w, isTerminal(w), "received", func() (string, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return path, d.inUse()
+	})
+	w = m // a message clears the progress line first
+	fail := func(code int, err error) int { m.stop(); return failTo(w, asJSON, code, err) }
 	d, err := newDialers(cfg)
 	if err != nil {
 		return fail(1, err)
 	}
+	if !asJSON {
+		m.run(progressEvery(m.tty))
+	}
+	defer m.stop()
 	// The dialer's close drains its direct connections until the sender
 	// closes them, up to a second. After a transfer the session's close
 	// (receiveOnce) returned once the sender acknowledged every byte, the
@@ -511,6 +541,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 			first = time.Since(t0)
 		}
 		written = base + n
+		m.wrote(n, written)
 	}
 	// told is the answer of a commit whose session was cut before the
 	// sender confirmed it: the next sessions tell it again (spec End.tla
@@ -522,7 +553,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 		var a xfer.Answer
 		var err error
 		if told == nil {
-			a, err = receiveOnce(ctx, d, t, mode, dir, conns, progress, onPath)
+			a, err = receiveOnce(ctx, d, t, mode, dir, conns, m.start, progress, onPath)
 			if errors.As(err, new(unconfirmed)) {
 				told = &a
 			}
@@ -540,6 +571,7 @@ func receiveTo(ctx context.Context, w io.Writer, cfg nfnet.Config, t nfnet.Targe
 		}
 		switch {
 		case err == nil && a.OK:
+			m.stop() // before mu: its last tick takes mu
 			el := time.Since(t0).Seconds()
 			mu.Lock()
 			fmt.Fprintf(w, "received %d %s, %d bytes in %.1f s (%.0f MB/s), path %s\n", a.Files, filesWord(a.Files), a.Bytes, el, float64(a.Bytes)/1e6/el, path)
@@ -618,7 +650,7 @@ func openBound(mode nfnet.DirectMode) time.Duration {
 	return 60 * time.Second
 }
 
-func receiveOnce(ctx context.Context, ds *dialers, t nfnet.Target, mode nfnet.DirectMode, dir string, conns int, progress xfer.Progress, onPath func(path, reason string)) (xfer.Answer, error) {
+func receiveOnce(ctx context.Context, ds *dialers, t nfnet.Target, mode nfnet.DirectMode, dir string, conns int, start func(total, held int64), progress xfer.Progress, onPath func(path, reason string)) (xfer.Answer, error) {
 	open := func(ctx context.Context) (xfer.Session, error) {
 		d, release := ds.take()
 		bound, cancel := context.WithTimeout(ctx, openBound(mode))
@@ -637,7 +669,7 @@ func receiveOnce(ctx context.Context, ds *dialers, t nfnet.Target, mode nfnet.Di
 	onPath(first.(*session).Info().Path, "")
 	stop := context.AfterFunc(ctx, func() { _ = first.Reset() })
 	defer stop()
-	a, err := receive(ctx, first, xfer.Receiving{Dir: dir, K: conns, Open: open, Progress: progress,
+	a, err := receive(ctx, first, xfer.Receiving{Dir: dir, K: conns, Open: open, Start: start, Progress: progress,
 		End: func(s xfer.Session) error { return senderEnd(s) }})
 	if errors.Is(err, xfer.ErrUnconfirmed) {
 		err = unconfirmed{err} // receiveTo tells the sender again
@@ -681,6 +713,13 @@ func (ds *dialers) take() (*nfnet.Dialer, func()) {
 			ds.mu.Unlock()
 		})
 	}
+}
+
+// inUse is the sessions open or opening (each holds a Dialer).
+func (ds *dialers) inUse() int {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	return len(ds.all) - len(ds.free)
 }
 
 func newDialers(cfg nfnet.Config) (*dialers, error) {

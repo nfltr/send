@@ -95,6 +95,10 @@ type Part struct {
 type want struct {
 	Version int    `json:"version,omitempty"` // the version both speak; 0: MinVersion
 	Parts   []Part `json:"parts"`
+	// Held is the file bytes the receiver's stage held verified at the
+	// receive's start, for the sender's progress only (a resume's are
+	// done); an older receiver sends none.
+	Held int64 `json:"held,omitempty"`
 }
 
 type start struct {

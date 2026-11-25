@@ -39,6 +39,10 @@ type Receiving struct {
 	// Open opens the sessions after the first; nil: the first only.
 	Open     Opener
 	Progress Progress
+	// Start gets the offer's file bytes and those the stage already
+	// holds verified (a resume), before the first chunk is written; nil:
+	// none.
+	Start func(total, held int64)
 	// End runs on the final answer's session after an OK answer (the
 	// sender's clean end: cmd's senderEnd); its error is returned with
 	// the answer, wrapped in ErrUnconfirmed. nil: none.
@@ -116,7 +120,16 @@ func ReceiveFrom(ctx context.Context, first Session, o Receiving) (Answer, error
 		_ = first.Close()
 		return Answer{}, err
 	}
-	return r.stripe(ctx, &sess{s: first, c: c}, r.pool(parts), o)
+	pool := r.pool(parts)
+	total := countBytes(m)
+	r.held = total
+	for _, p := range pool {
+		r.held -= min(p.r[1]*maxData, m.Entries[p.i].Size) - p.r[0]*maxData
+	}
+	if o.Start != nil {
+		o.Start(total, r.held)
+	}
+	return r.stripe(ctx, &sess{s: first, c: c}, pool, o)
 }
 
 // answer sends a on s, runs end on it after an OK one, and ends s.
@@ -168,7 +181,7 @@ func (r *receiver) stripe(ctx context.Context, first *sess, pool []piece, o Rece
 		active[s] = true
 		r.trSet(s)
 		go func() {
-			err := s.c.writeJSON(frameWant, want{Version: Version, Parts: wantParts(s.have)})
+			err := s.c.writeJSON(frameWant, want{Version: Version, Parts: wantParts(s.have), Held: r.held})
 			if err == nil {
 				err = s.c.flush()
 			}
