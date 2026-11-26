@@ -93,8 +93,7 @@ reliability:
 	sh bench/rel/run.sh matrix
 reliability-soak:
 	sh bench/rel/run.sh soak
-# The relayed soak of docs/reliability.md (defect 3), 25 minutes, so a CI
-# runner can run it by name: make ci-request ... TARGET=reliability-soak-relayed.
+# The relayed soak of docs/reliability.md (defect 3), 25 minutes, by name.
 reliability-soak-relayed:
 	REL_SEED=$${REL_SEED:-17} REL_SOAK_S=1500 REL_CELLS='relayed$$' sh bench/rel/run.sh soak
 
@@ -102,8 +101,7 @@ reliability-soak-relayed:
 # GitHub release, signature and sums verified) against nfltr-send built
 # from this checkout, both ways, relayed and direct, on a private relay
 # (bench/rel/cross.sh; docs/v1-contract.md "Compatibility"); Linux with
-# docker. A check workflow job; not in make ci, whose TMPDIR a CI runner's
-# docker cannot mount (there: ci-request TARGET=cross-version). A release
+# docker. A check workflow job; not in make ci. A release
 # moves SEND_PREV to itself.
 SEND_PREV ?= v0.1.12
 export SEND_PREV

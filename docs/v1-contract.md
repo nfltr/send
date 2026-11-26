@@ -169,8 +169,7 @@ hint `d2`; nfltr `docs/decisions/direct-once-2026-11-22.md`): against
 v0.1.12 or earlier, with a sender with no account, a newer receiver exits
 12 at once and an older one 6 (its reset, naming the sender's reason).
 `make cross-version`
-(`bench/rel/cross.sh`, a check workflow job; on the nfltr CI runners
-`make ci-request REPO=send REF=<sha> TARGET=cross-version`) runs the
+(`bench/rel/cross.sh`, a check workflow job) runs the
 previous release (`SEND_PREV`, downloaded from its GitHub release, its
 signature and sum verified) against this checkout both ways on a private
 relay and requires those refusals. Both ends need a relay that serves nf1 addresses (nfltr-relay
