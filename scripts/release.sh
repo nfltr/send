@@ -8,7 +8,8 @@
 #   sign    SHA256SUMS.sshsig: SHA256SUMS signed with $SIGNING_KEY (an
 #           OpenSSH key file, or its .pub with the key in ssh-agent)
 #   verify  SHA256SUMS.sshsig against release/allowed_signers, then every
-#           file against SHA256SUMS
+#           file against SHA256SUMS; prints the line to set in hosted's
+#           web/site/flagship-releases.yaml (it never pushes hosted)
 #   dryrun  build twice and compare, sign with a throwaway key, verify
 set -eu
 cd "$(dirname "$0")/.."
@@ -42,7 +43,11 @@ verify() { # verify <dir> <allowed_signers>
 case ${1:-} in
 build) build dist ;;
 sign) sign dist "${SIGNING_KEY:?set SIGNING_KEY to the release key file}" ;;
-verify) verify dist release/allowed_signers ;;
+verify)
+	verify dist release/allowed_signers
+	# hosted's web/site/flagship-releases.yaml names the latest release; ops-alerts alerts while it lags the tag.
+	echo "set in hosted web/site/flagship-releases.yaml: send: $(git describe --tags --exact-match 2>/dev/null || echo '<the tag, vX.Y.Z>')"
+	;;
 dryrun)
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
