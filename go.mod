@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/nfltr/blake3 v1.5.2
-	github.com/nfltr/relay-core v0.19.9
-	github.com/nfltr/relay/client v0.25.3
+	github.com/nfltr/relay-core v0.19.10
+	github.com/nfltr/relay/client v0.25.4
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sys v0.49.0
 )
