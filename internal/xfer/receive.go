@@ -605,7 +605,7 @@ func (r *receiver) read(s *sess) error {
 			}
 			var err error
 			if wrote {
-				err = syncFile(f) // on stable storage before the commit begins (syncStage)
+				err = fileSync(f) // on stable storage before the commit begins (syncStage)
 			}
 			dio.close()
 			if cerr := f.Close(); err == nil {
@@ -821,6 +821,10 @@ func (r *receiver) verify(i int, tr verified.Tree) error {
 // rename is os.Root.Rename (a test fails one).
 var rename = renameNoReplace
 
+// fileSync and stageSync are syncFile and syncStage (a test fails each:
+// TestFailedSyncCommitsNothing).
+var fileSync, stageSync = syncFile, syncStage
+
 func (r *receiver) commit() error {
 	if !r.finishing {
 		if err := r.recheck(); err != nil {
@@ -838,7 +842,7 @@ func (r *receiver) commit() error {
 				return err
 			}
 		}
-		if err := syncStage(r.sr); err != nil {
+		if err := stageSync(r.sr); err != nil {
 			return err
 		}
 		if err := r.syncDirs(); err != nil {

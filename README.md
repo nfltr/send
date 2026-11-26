@@ -63,7 +63,8 @@ Measurements per change: [`docs/performance.md`](docs/performance.md).
   system (it reports a write error since Linux 5.8), on macOS by an
   `fsync(2)` per file and then one flush of the drive's cache (the
   `F_FULLFSYNC` of the commit's intent record), elsewhere by a sync per
-  file. Not one flush of the drive per file.
+  file. Not one flush of the drive per file. A failed sync commits
+  nothing (`TestFailedSyncCommitsNothing`).
 - **Resumed.** A cut transfer keeps what arrived (in a hidden
   `.nfltr-send-*` directory inside the receiving directory, with each
   file's hash tree); the

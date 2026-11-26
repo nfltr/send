@@ -491,6 +491,38 @@ func BenchmarkTransfer(b *testing.B) {
 	}
 }
 
+// A received file reaches stable storage before the commit renames it
+// into place (README "durable": syncfs on Linux, an fsync per file and a
+// drive-cache flush on macOS): with either sync step failing, the receiver
+// answers not ok and dst holds nothing but the stage.
+func TestFailedSyncCommitsNothing(t *testing.T) {
+	planted := errors.New("planted sync failure")
+	for _, tc := range []struct {
+		name string
+		set  func()
+	}{
+		{"file", func() { fileSync = func(*os.File) error { return planted } }},
+		{"stage", func() { stageSync = func(*os.Root) error { return planted } }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := NewSource([]string{tree(t, 1<<20)})
+			must(t, err)
+			dst := t.TempDir()
+			tc.set()
+			defer func() { fileSync, stageSync = syncFile, syncStage }()
+			_, rr := session(t, s, dst, 0)
+			if rr.a.OK {
+				t.Fatalf("receiver %+v: answered ok with its sync failing", rr)
+			}
+			for _, n := range names(t, dst) {
+				if !strings.HasPrefix(n, StagePrefix) {
+					t.Fatalf("with its sync failing dst holds %q", names(t, dst))
+				}
+			}
+		})
+	}
+}
+
 // A commit whose rename fails part way keeps the verified stage and its
 // intent record: the next session resends nothing and commits every
 // top-level entry (review 2026-11-17, finding 1: the first rename landed,
