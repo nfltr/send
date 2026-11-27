@@ -1,0 +1,11 @@
+# Dependencies behind ports (scripts/check-dep-ports.sh; nfltr
+# docs/decisions/dependencies-behind-ports-2026-11-27.md). One rule per line:
+# NAME KIND PATTERN ALLOWED... (ALLOWED: the adapter and the escape hatches).
+# Today's violations are in scripts/dep-ports-allow.txt, which may only shrink.
+#
+# The relay's config library: tests start a relay through relay-core's typed
+# test harness, never by setting its viper keys.
+config import github\.com/spf13/(viper|pflag)
+grpc import google\.golang\.org/(grpc|genproto|protobuf)
+quic import github\.com/nfltr/quic-go
+docker name (^|[^[:alnum:]_./-])docker[[:space:]]+(compose|run|exec|build|buildx|rm|pull|push|ps|inspect|network|volume|logs|cp|kill|stop|start|image|info|wait|save|load|tag|context)([[:space:]]|$)

@@ -13,6 +13,8 @@
 ci: check spec spec-traces release-dryrun
 
 check:
+	./scripts/check-dep-ports.sh self-test
+	./scripts/check-dep-ports.sh
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	go vet ./...
 	GOOS=windows GOARCH=amd64 go vet ./...

@@ -1,0 +1,5 @@
+# NAME FILE: violations of scripts/dep-ports.txt that exist today (check-dep-ports.sh --update); it may only shrink.
+config cmd/nfltr-send/anon_test.go
+docker bench/cpu/netem.sh
+docker bench/rel/cross.sh
+docker bench/rel/run.sh

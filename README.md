@@ -331,6 +331,8 @@ $ make spec    # the TLA+ models (Resume.tla, Commit.tla), their witnesses and m
 $ make release-dryrun   # the release files in dist/, built twice and compared, signed with a throwaway key
 ```
 
+`make check` also runs `scripts/check-dep-ports.sh` (a copy of nfltr's): only a dependency's adapter imports or names it (`scripts/dep-ports.txt`); today's exceptions are `scripts/dep-ports-allow.txt`, which may only shrink.
+
 A release is `make release`, `make release-sign SIGNING_KEY=<key>`,
 `make release-verify` (against `release/allowed_signers`) on a clean
 checkout of its tag, then the files in `dist/` attached to the tag's
