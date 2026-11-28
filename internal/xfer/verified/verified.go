@@ -237,7 +237,7 @@ func Sum(r io.Reader) ([32]byte, error) {
 	var s [32]byte
 	for {
 		n, err := io.ReadFull(r, buf)
-		h.Write(buf[:n])
+		_, _ = h.Write(buf[:n]) // a hash.Hash's Write never returns an error
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			copy(s[:], h.Sum(nil))
 			return s, nil

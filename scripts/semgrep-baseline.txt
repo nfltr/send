@@ -1,0 +1,14 @@
+# semgrep baseline (scripts/sast-baseline.py): accepted or false-positive
+# findings, triaged by rule (lane SHIFTLEFT, 2026-11-28):
+#   use-filepath-join: names inside the receive's os.Root, slash-separated
+#     as the protocol sends them; path.Join keeps them so, the Root confines them.
+#   use-of-unsafe-block: the direct I/O buffer's alignment check (its #nosec
+#     G103 names why).
+# Regenerate only after triaging every new finding:
+#   scripts/check-semgrep.sh --update
+use-filepath-join internal/xfer/lock.go d30e940537229d2e  # name := path.Join(stage, lockName)
+use-filepath-join internal/xfer/receive.go 80cc8f4df5c0d69c  # err := rename(r.root, path.Join(r.stage, top), top)
+use-filepath-join internal/xfer/receive.go af57eb9bdb6b8042  # b, err := r.root.ReadFile(path.Join(stage, intentName))
+use-filepath-join internal/xfer/receive.go ff93da8d982ff5b1  # if b, err := root.ReadFile(path.Join(r.stage, intentName)); err == nil && json.U
+use-of-unsafe-block internal/xfer/direct_linux.go f90814468744cb42  # uintptr(unsafe.Pointer(unsafe.SliceData(p)))%dioAlign != 0 { // #nosec G103 -- t
+use-of-unsafe-block internal/xfer/direct_linux.go f90814468744cb42  # uintptr(unsafe.Pointer(unsafe.SliceData(p)))%dioAlign != 0 { // #nosec G103 -- t

@@ -7,10 +7,23 @@
 # -tags sendtrace, each trace they write checked against its model with TLC,
 # and the mutant traces rejected (spec/README.md "Traces"). All run in CI,
 # and the tests on Windows too.
-.PHONY: ci check spec spec-traces bench-line bench-write bench-ab release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
+.PHONY: ci check check-gosec check-semgrep check-hadolint spec spec-traces bench-line bench-write bench-ab release release-sign release-verify release-dryrun reliability reliability-soak reliability-soak-relayed cross-version
 # make ci: the check workflow's Linux jobs but cross-version, for a CI runner
 # of our own.
-ci: check spec spec-traces release-dryrun
+ci: check check-gosec check-semgrep check-hadolint spec spec-traces release-dryrun
+
+# The static security gates nfltr's repositories run in make ci (lane
+# SHIFTLEFT): gosec and semgrep (pinned, each finding fixed, suppressed with
+# its reason or in scripts/*-baseline.txt; a stale entry fails) and hadolint
+# (pinned image, docker) on the tracked Dockerfiles.
+check-gosec:
+	./scripts/check-gosec.sh
+
+check-semgrep:
+	./scripts/check-semgrep.sh
+
+check-hadolint:
+	./scripts/check-hadolint.sh
 
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
